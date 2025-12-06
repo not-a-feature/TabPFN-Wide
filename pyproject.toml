@@ -10,11 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Prior Labs License Version 1.1"}
 authors = [
-    {name = "Christopher Kolberg"}
-    {name = "Jules Kreuer"}
-    {name = "Sofiane Ouaari}
-    {name = "Katharina Eggensperger"}
-    {name = "Nico Pfeifer"}
+    {name = "Christopher Kolberg"},
+    {name = "Jules Kreuer"},
+    {name = "Sofiane Ouaari"},
+    {name = "Katharina Eggensperger"},
+    {name = "Nico Pfeifer"},
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

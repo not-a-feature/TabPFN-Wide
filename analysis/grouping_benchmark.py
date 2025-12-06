@@ -76,28 +76,16 @@ def main(
     # Fetch OpenML suite
     suite = openml.study.get_suite(suite_id=suite_id)
     openml_df = tasks.list_tasks(output_format="dataframe", task_id=suite.tasks)
-    
-    print(f"Total tasks in suite {suite_id}: {len(openml_df)}")
 
     if "task_type" in openml_df.columns:
         openml_df = openml_df[openml_df["task_type"] == "Supervised Classification"]
-        print(f"Tasks after 'Supervised Classification' filter: {len(openml_df)}")
 
     openml_df = openml_df[openml_df["NumberOfFeatures"] >= min_features]
-    print(f"Tasks after min_features>={min_features} filter: {len(openml_df)}")
-    
     openml_df = openml_df[openml_df["NumberOfFeatures"] <= max_features]
-    print(f"Tasks after max_features<={max_features} filter: {len(openml_df)}")
-    
     openml_df = openml_df[openml_df["NumberOfInstances"] <= max_instances]
-    print(f"Tasks after max_instances<={max_instances} filter: {len(openml_df)}")
-    
     # TabPFN is not suitable for datasets with more than 10 classes
     openml_df = openml_df[openml_df["NumberOfClasses"] < 10]
-    print(f"Tasks after classes < 10 filter: {len(openml_df)}")
-    
     openml_df = openml_df[openml_df["NumberOfClasses"] > 1]
-    print(f"Tasks after classes > 1 filter: {len(openml_df)}")
 
     print(f"Found {len(openml_df)} tasks to process in suite {suite_id}")
     print(f"Testing features_per_group values: {grouping_values}")
@@ -249,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("suite_id", type=int, 
                        help="OpenML suite ID")
     parser.add_argument(
-        "--max_features", type=int, default=100000, 
+        "--max_features", type=int, default=5000, 
         help="Maximum number of features to consider"
     )
     parser.add_argument(

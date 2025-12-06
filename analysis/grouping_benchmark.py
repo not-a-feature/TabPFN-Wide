@@ -1,13 +1,16 @@
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import pandas as pd
 import numpy as np
 import os
+import glob
+from scipy.io import loadmat
 from sklearn.utils import shuffle
 import torch
-import openml
-from openml import tasks
 import warnings
-
 warnings.filterwarnings("ignore")
+
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
@@ -20,6 +23,32 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 setattr(TabPFNClassifier, "fit", fit)
+
+
+def load_mat_file(mat_path):
+    """
+    Loads a MATLAB .mat file and extracts X and Y.
+    
+    Parameters:
+        mat_path (str): Path to the .mat file.
+        
+    Returns:
+        tuple: (X, y) numpy arrays, or (None, None) if loading fails.
+    """
+    try:
+        data = loadmat(mat_path)
+        
+        # Extract X and Y from the loaded data
+        if "X" in data and "Y" in data:
+            X = data["X"]
+            y = data["Y"].ravel()  # Flatten Y to 1D array
+            return X, y
+        else:
+            print(f"Warning: 'X' or 'Y' not found in {mat_path}")
+            return None, None
+    except Exception as e:
+        print(f"Error loading {mat_path}: {e}")
+        return None, None
 
 
 def plot_results(results_file, output_plot):
@@ -50,7 +79,7 @@ def plot_results(results_file, output_plot):
 
 
 def main(
-    suite_id,
+    hdlss_data_dir,
     output_file,
     max_features=100,
     min_features=0,
@@ -60,10 +89,10 @@ def main(
     generate_plot=True,
 ):
     """
-    Benchmark TabPFN base model with different features_per_group settings.
+    Benchmark TabPFN base model with different features_per_group settings using HDLSS datasets.
     
     Parameters:
-        suite_id (int): The OpenML suite ID specifying the collection of tasks to evaluate.
+        hdlss_data_dir (str): Path to the directory containing .mat files.
         output_file (str): Path to the CSV file where results will be saved or appended.
         max_features (int, optional): Maximum number of features allowed in a dataset. Defaults to 100.
         min_features (int, optional): Minimum number of features required in a dataset. Defaults to 0.
@@ -71,32 +100,25 @@ def main(
         grouping_values (list, optional): List of features_per_group values to test. Defaults to [1, 2, 3].
         device (str, optional): Device identifier for model computation. Defaults to "cuda:0".
         generate_plot (bool, optional): Whether to generate comparison plot. Defaults to True.
-    
-    Description:
-        - Uses base TabPFN v2.5 model (no fine-tuning)
-        - Tests different features_per_group settings
-        - Runs stratified k-fold cross-validation on each dataset
-        - Saves results to CSV and optionally generates comparison plot
     """
-    suite = openml.study.get_suite(suite_id=suite_id)
-    openml_df = tasks.list_tasks(output_format="dataframe", task_id=suite.tasks)
+    # Get all .mat files from the directory
+    if not os.path.exists(hdlss_data_dir):
+        print(f"Error: Directory {hdlss_data_dir} does not exist")
+        return
 
-    if "task_type" in openml_df.columns:
-        openml_df = openml_df[openml_df["task_type"] == "Supervised Classification"]
+    mat_files = sorted(glob.glob(os.path.join(hdlss_data_dir, "*.mat")))
+    
+    if not mat_files:
+        print(f"No .mat files found in {hdlss_data_dir}")
+        return
 
-    openml_df = openml_df[openml_df["NumberOfFeatures"] >= min_features]
-    openml_df = openml_df[openml_df["NumberOfFeatures"] <= max_features]
-    openml_df = openml_df[openml_df["NumberOfInstances"] <= max_instances]
-    # TabPFN is not suitable for datasets with more than 10 classes
-    openml_df = openml_df[openml_df["NumberOfClasses"] < 10]
-    openml_df = openml_df[openml_df["NumberOfClasses"] > 1]
-
-    print(f"Testing on {len(openml_df)} tasks with features_per_group values: {grouping_values}")
+    print(f"Found {len(mat_files)} datasets to process")
+    print(f"Testing features_per_group values: {grouping_values}")
 
     # Initialize results DataFrame
     res_df = pd.DataFrame(
         columns=[
-            "task_id",
+            "task_id", # Keeping column name for compatibility, will use dataset name
             "task_name",
             "num_features",
             "num_instances",
@@ -129,31 +151,47 @@ def main(
         model = models[0]
         model.features_per_group = grouping
 
-        for task_id in openml_df["tid"].values:
+        for mat_file in mat_files:
+            dataset_name = os.path.basename(mat_file).replace(".mat", "")
+            
             # Check if already processed
             if (
-                (res_df["task_id"] == task_id)
+                (res_df["task_name"] == dataset_name)
                 & (res_df["features_per_group"] == grouping)
             ).any():
-                print(f"Skipping task ID {task_id} (grouping={grouping}), already processed")
+                print(f"Skipping dataset {dataset_name} (grouping={grouping}), already processed")
                 continue
 
             try:
-                task = openml.tasks.get_task(int(task_id))
-                dataset = task.get_dataset()
-                X, y, _, _ = dataset.get_data(target=task.target_name)
-                X, y = shuffle(X, y, random_state=42)
-                X = X.values
-                le = LabelEncoder()
-                y = le.fit_transform(y)
+                X, y = load_mat_file(mat_file)
+                
+                if X is None or y is None:
+                    continue
 
-                task_name = dataset.name
+                # Filter by feature and instance count
                 num_features = X.shape[1]
                 num_instances = X.shape[0]
                 num_classes = len(np.unique(y))
 
-                print(f"\nTask {task_id}: {task_name}")
+                if num_features < min_features or num_features > max_features:
+                    # print(f"Skipping {dataset_name}: {num_features} features outside range")
+                    continue
+                
+                if num_instances > max_instances:
+                    # print(f"Skipping {dataset_name}: {num_instances} instances exceeds max")
+                    continue
+
+                if num_classes < 2 or num_classes > 10:
+                    # print(f"Skipping {dataset_name}: {num_classes} classes not supported")
+                    continue
+
+                print(f"\nDataset: {dataset_name}")
                 print(f"  Features: {num_features}, Instances: {num_instances}, Classes: {num_classes}")
+
+                X, y = shuffle(X, y, random_state=42)
+                X = X.astype(np.float32)
+                le = LabelEncoder()
+                y = le.fit_transform(y)
 
                 clf = TabPFNClassifier(
                     device=device, n_estimators=1, ignore_pretraining_limits=True
@@ -189,8 +227,8 @@ def main(
                             res_df,
                             pd.DataFrame(
                                 {
-                                    "task_id": [task_id],
-                                    "task_name": [task_name],
+                                    "task_id": [dataset_name], # Using dataset name as ID
+                                    "task_name": [dataset_name],
                                     "num_features": [num_features],
                                     "num_instances": [num_instances],
                                     "num_classes": [num_classes],
@@ -208,10 +246,10 @@ def main(
 
                 # Save results after each task
                 res_df.to_csv(output_file, index=False)
-                print(f"Task ID {task_id} processed successfully (grouping={grouping})")
+                print(f"Dataset {dataset_name} processed successfully (grouping={grouping})")
 
             except Exception as e:
-                print(f"Error with task ID {task_id}: {e}")
+                print(f"Error with dataset {dataset_name}: {e}")
                 continue
 
     print(f"Results saved to {output_file}")
@@ -223,12 +261,12 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Benchmark TabPFN with different features_per_group settings"
+        description="Benchmark TabPFN with different features_per_group settings on HDLSS data"
     )
-    parser.add_argument("--suite_id", type=int, default=334, 
-                       help="OpenML suite ID to process (default: 334)")
+    parser.add_argument("hdlss_data_dir", type=str, 
+                       help="Path to directory containing .mat files")
     parser.add_argument(
-        "--max_features", type=int, default=100, 
+        "--max_features", type=int, default=100000, 
         help="Maximum number of features to consider"
     )
     parser.add_argument(
@@ -236,11 +274,11 @@ if __name__ == "__main__":
         help="Minimum number of features to consider"
     )
     parser.add_argument(
-        "--max_instances", type=int, default=2000, 
+        "--max_instances", type=int, default=10000, 
         help="Maximum number of instances to consider"
     )
     parser.add_argument(
-        "--output_file", type=str, default="grouping_benchmark_results.csv",
+        "--output_file", type=str, default="grouping_benchmark_hdlss_results.csv",
         help="Output CSV file path"
     )
     parser.add_argument(
@@ -255,7 +293,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     main(
-        suite_id=args.suite_id,
+        hdlss_data_dir=args.hdlss_data_dir,
         output_file=args.output_file,
         max_features=args.max_features,
         min_features=args.min_features,

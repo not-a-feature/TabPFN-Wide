@@ -24,17 +24,23 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = [
     "numpy",
     "pandas",
     "scikit-learn",
     "torch",
-    "tqdm",
-    "wandb",
     "joblib",
     "tabpfn==6.0.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "tqdm",
+    "wandb",
     "tabicl",
-    "openml"
+    "openml",
+    "matplotlib",
+    "seaborn",
+    "scipy",
 ]
 
 [project.urls]

@@ -50,7 +50,11 @@ git clone https://github.com/pfeiferAI/TabPFN-Wide.git
 cd TabPFN-Wide
 
 # 2. Install in editable mode
+# 2. Install in editable mode
 pip install -e .
+
+# Optional: Install with development dependencies (for training/evaluation)
+pip install -e ".[dev]"
 ```
 
 ---
@@ -59,12 +63,15 @@ pip install -e .
 
 ### Training a Model
 
-The training logic is contained in the `experiments/` directory. You can run training jobs using the provided python script or shell wrapper.
+> [!NOTE]
+> Training scripts require the `dev` dependencies. Install with `pip install ".[dev]"`.
+
+The training logic is contained in the `training/` directory. You can run training jobs using the provided python script or shell wrapper.
 
 **Using the Python script:**
 
 ```bash
-python experiments/train.py \
+python training/train.py \
     --prior_type mlp_scm \
     --prior_max_features 100 \
     --batch_size 8
@@ -73,7 +80,7 @@ python experiments/train.py \
 **(Optional) Using the shell script:**
 
 ```bash
-bash experiments/train.sh
+bash training/train.sh
 ```
 
 ### Evaluation & Analysis

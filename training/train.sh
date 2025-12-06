@@ -1,4 +1,4 @@
-torchrun --master_port 29501  $BASE_DIR_LOCAL/experiments/train.py \
+torchrun --master_port 29501  $BASE_DIR_LOCAL/training/train.py \
             --batch_size 16 \
             --learning_rate 1e-5 \
             --weight_decay 1e-4 \

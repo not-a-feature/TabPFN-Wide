@@ -15,7 +15,7 @@ def load_multiomics_benchmark_ds(dataset, preprocessing, dir_path=None):
     file_appendix = f"_{preprocessing.lower()}" if preprocessing != "Original" else ""
     
     if dir_path is None:
-        dir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'multiomics_benchmark_data')
+        dir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'benchmark_data', 'multiomics_benchmark_data')
     path_to_benchmark_ds_pre = os.path.join(dir_path, "Cancer-Multi-Omics-Benchmark", "Main_Dataset", 
                                         "Classification_datasets", f"GS-{dataset}", preprocessing)
 
@@ -70,7 +70,7 @@ def load_multiomics_benchmark_ds(dataset, preprocessing, dir_path=None):
 @lru_cache(maxsize=1)
 def load_multiomics_benchmark_shamir(dataset, normalize, aligned=True, subtype_labels=False):
     assert dataset in ALL_MULTIOMICS_DATASETS_SHAMIR, f"Dataset {dataset} not in {ALL_MULTIOMICS_DATASETS_SHAMIR}"
-    shamir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'shamir_data', 'Multi_Omics_Cancer_Benchmark_TCGA_Shamir')
+    shamir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'benchmark_data', 'shamir_data', 'Multi_Omics_Cancer_Benchmark_TCGA_Shamir')
     dir_path = os.path.join(shamir_path, dataset)
     
     mrna_data = pd.read_table(os.path.join(dir_path, "exp"), header=0, index_col=0, sep=r"\s+")

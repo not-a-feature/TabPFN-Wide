@@ -1,7 +1,46 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tabpfnwide"
 version = "0.1.0"
+description = "TabPFN-Wide: Extension of the TabPFN-2.5 foundation model, specifically designed for wide datasets (many features, few samples)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Prior Labs License Version 1.1"}
+authors = [
+    {name = "Christopher Kolberg"}
+    {name = "Jules Kreuer"}
+    {name = "Sofiane Ouaari}
+    {name = "Katharina Eggensperger"}
+    {name = "Nico Pfeifer"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "torch",
+    "tqdm",
+    "wandb",
+    "joblib",
+    "tabpfn==6.0.6",
+    "tabicl",
+    "openml"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/pfeiferAI/TabPFN-Wide"
+"Bug Tracker" = "https://github.com/pfeiferAI/TabPFN-Wide/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tabpfnwide*"]

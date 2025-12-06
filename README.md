@@ -1,62 +1,132 @@
+
 # TabPFN-Wide
 
-This repository provides code and utilities for training and evaluating wide TabPFN-Wide models on multi-omics and tabular datasets. It includes scripts, reusable modules, analysis tools, and pretrained models.
+[![Python Versions](https://img.shields.io/pypi/pyversions/tabpfnwide.svg)](https://pypi.org/project/tabpfnwide/)
+[![License](https://img.shields.io/badge/License-PriorLabs-blue.svg)](LICENSE)
 
-## Repository Structure
+**TabPFN-Wide** is an extension of the TabPFN-2.5 foundation model, specifically designed for **wide datasets** (many features, few samples), such as **multi-omics** data. It allows for training and evaluating large-scale tabular models that can handle thousands of features.
 
-- `tabpfnwide/`  
-   Core package with training scripts, data loaders, utility functions, and patches.
-   - `train.py`, `data.py`, `utils.py`, etc.: Main codebase.
-   - `patches.py`: Contains patches for TabPFN.
-- `analysis/`  
-   Scripts for analyzing results and comparing model performance.
-    - `multiomics_feature_reduction.py`: Benchmarking on multi-omics datasets.
-    - `openml_benchmark.py`: Benchmarking on OpenML datasets.
-    - `openml_widening.py`: Code for feature-smearing and needle-in-a-haystack experiments.
-    - `extract_widened_attention.py`: Script for extracting attention of feature-smearing and needle-in-a-haystack datasets.
-    - `extract_multi_omics_attention.py`: Script for extracting attention of a multi-omics dataset to apply biological interpretation.
-- `models/`  
-   Pretrained model checkpoints.
-- `multiomics_benchmark_data/`, `shamir_data/`  
-   Placeholder directories for datasets.
-- `tabpfn_wide_example.ipynb`, `tabpfn_wide_attention.ipynb`  
-   Example Jupyter notebooks. 
-- `requirements.txt`  
-   List of required Python packages.
-- `setup.py`, `pyproject.toml`  
-   Packaging and installation files.
+This repository provides the `tabpfnwide` package along with a suite of **experimental scripts** for training, feature-smearing analysis, and biological interpretation.
 
-## Patching and API Stability
+---
 
-This project uses patches (see `tabpfnwide/patches.py`) to extend or modify the behavior of external libraries such as TabPFN. This approach makes it easy to share and inject new functionality without modifying the original source code.
+### Quick Start
 
-**However, please note:**
-The APIs of the TabPFN package and related dependencies have changed and are actively changing. Patches may break unexpectedly with new releases, leading to subtle bugs or runtime errors. The current implementation is tested with the versions specified in `requirements.txt`. However, we note that the patches are not necessary for training and using TabPFN-Wide models, but only for the analysis scripts as well as extracting attention weights.
+> [!TIP]
+> Check out the **[Interactive Notebook](tabpfn_wide_example.ipynb)** to dive right in! It demonstrates how to initialize the model, load data, and run predictions.
 
-## Setup
-1. Create and activate a Python environment (e.g., with conda or venv).
-2. Install dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
-3. Install the package:
-    ```bash
-    pip install -e .
-    ```
+---
 
-## Usage
+## Installation
 
-- To train a model, run the `train.sh`script with the desired parameters.
-- See the example notebooks for usage demonstrations of the pre-trained models.
+### Installation from Source
 
-## Data
+To install the latest version directly from GitHub:
 
-- Place the datasets in the appropriate folders (`multiomics_benchmark_data/`, `shamir_data/`).
-- Data loading utilities are provided in `tabpfnwide/data.py` and `tabpfnwide/load_mm_data.py`.
+```bash
+pip install "tabpfnwide @ git+https://github.com/pfeiferAI/TabPFN-Wide.git"
+```
 
-## Pretrained Models
+### Local Development Installation
 
-Pretrained model checkpoints are available in the `models/` directory.
+We recommend using `uv` for a fast and reliable development setup, but standard `pip` works as well.
 
-## Comparison with TabPFNv2
-For comparison with TabPFNv2, we used the original TabPFNv2 model available at `https://huggingface.co/Prior-Labs/TabPFN-v2-clf/blob/main/tabpfn-v2-classifier.ckpt`. From package version 2.1.0 the `tabpfn` package per default uses the Real-TabPFN model. To replicate our results, please download the original TabPFNv2 model and load it explicitly in the code using the `model_path` argument of the `TabPFNClassifier`.
+**Using uv (Recommended):**
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/pfeiferAI/TabPFN-Wide.git
+cd TabPFN-Wide
+
+# 2. Sync dependencies
+uv sync
+```
+
+**Using pip:**
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/pfeiferAI/TabPFN-Wide.git
+cd TabPFN-Wide
+
+# 2. Install in editable mode
+pip install -e .
+```
+
+---
+
+## Basic Usage
+
+### Training a Model
+
+The training logic is contained in the `experiments/` directory. You can run training jobs using the provided python script or shell wrapper.
+
+**Using the Python script:**
+
+```bash
+python experiments/train.py \
+    --prior_type mlp_scm \
+    --prior_max_features 100 \
+    --batch_size 8
+```
+
+**(Optional) Using the shell script:**
+
+```bash
+bash experiments/train.sh
+```
+
+### Evaluation & Analysis
+
+- **Attention Analysis**: Use `analysis/extract_multi_omics_attention.py` to extract interpretable attention weights from trained models.
+- **Feature Reduction**: Use `analysis/multiomics_feature_reduction.py` for benchmarking on reduced feature sets.
+---
+
+## License
+
+This project is licensed under the **Prior Labs License Version 1.1**.
+
+> [!IMPORTANT]
+> The license includes an attribution requirement. If you use this work to improve an AI model, you must include "TabPFN" in the model name and display "Built with PriorLabs-TabPFN". See [LICENSE](LICENSE) for details.
+
+---
+
+## Citation
+
+If you use this code or model in your research, please cite:
+
+```bibtex
+TODO
+
+```
+
+For the original TabPFN work, please cite:
+
+```bibtex
+@article{hollmann2025tabpfn,
+ title={Accurate predictions on small data with a tabular foundation model},
+ author={Hollmann, Noah and M{\"u}ller, Samuel and Purucker, Lennart and
+         Krishnakumar, Arjun and K{\"o}rfer, Max and Hoo, Shi Bin and
+         Schirrmeister, Robin Tibor and Hutter, Frank},
+ journal={Nature},
+ year={2025},
+ month={01},
+ day={09},
+ doi={10.1038/s41586-024-08328-6},
+ publisher={Springer Nature},
+ url={https://www.nature.com/articles/s41586-024-08328-6},
+}
+```
+
+---
+
+## Development & Support
+
+**Repository Structure:**
+
+- `tabpfnwide/`: Core installable package.
+- `experiments/`: Training and evaluation scripts.
+- `analysis/`: Benchmarking and interpretation tools.
+
+**Contact:**
+For issues, please open a ticket on the [Issue Tracker](https://github.com/pfeiferAI/TabPFN-Wide/issues).

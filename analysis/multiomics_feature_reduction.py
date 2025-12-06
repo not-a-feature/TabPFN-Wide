@@ -7,8 +7,7 @@ import torch
 import matplotlib.pyplot as plt
 from tabpfnwide.utils import PredictionResults
 from tabpfnwide.data import get_wide_validation_datasets
-from tabpfn.model.loading import load_model_criterion_config
-from tabpfn.model.memory import MemoryUsageEstimator
+from tabpfn.model_loading import load_model_criterion_config
 import warnings
 warnings.filterwarnings("ignore")
 import argparse
@@ -44,7 +43,7 @@ def main(dataset_name, checkpoint_paths, output_file, device="cuda:0", omics_lis
             check_bar_distribution_criterion=False,
             cache_trainset_representation=False,
             which='classifier',
-            version='v2',
+            version='v2.5',
             download=True,
         )
         if checkpoint_path != "default":

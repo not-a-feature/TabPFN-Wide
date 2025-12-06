@@ -4,9 +4,9 @@ import torch
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from tabpfnwide.load_mm_data import load_multiomics
-from tabpfn.model.loading import load_model_criterion_config
-from tabpfn.model.memory import MemoryUsageEstimator
+from tabpfn.model_loading import load_model_criterion_config
 import warnings
+
 warnings.filterwarnings("ignore")
 import argparse
 
@@ -27,26 +27,37 @@ def main(dataset_name, output_file, checkpoint_path, device="cuda:0", omic="mrna
         - Runs inference to obtain predictions and attention maps.
         - Saves the extracted attention maps to the specified output file.
     """
-    
+
     ds_dict, labels = load_multiomics(dataset_name)
     mrna = ds_dict[omic]
     X, y = mrna.values, labels
     y = LabelEncoder().fit_transform(y)
     print(X.shape)
 
-    model, _, _ = load_model_criterion_config(
-            model_path=None,
-            check_bar_distribution_criterion=False,
-            cache_trainset_representation=False,
-            which='classifier',
-            version='v2',
-            download=True,
+    models, _, _, _ = load_model_criterion_config(
+        model_path=None,
+        check_bar_distribution_criterion=False,
+        cache_trainset_representation=False,
+        which="classifier",
+        version="v2.5",
+        download_if_not_exists=True,
     )
+    model = models[0]
     # Disable feature grouping
     model.features_per_group = 1
 
-    checkpoint_path = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = checkpoint_path["state_dict"]
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    # Handle DDP-wrapped checkpoints
+    if "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    else:
+        state_dict = checkpoint
+
+    # Unwrap DDP prefix if present
+    if any(k.startswith("module.") for k in state_dict.keys()):
+        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+
     model.load_state_dict(state_dict)
     model.to(device)
 
@@ -61,16 +72,6 @@ def main(dataset_name, output_file, checkpoint_path, device="cuda:0", omic="mrna
         layer.self_attn_between_features.save_att_map = True
         layer.self_attn_between_features.number_of_samples = X_train_tensor.shape[0]
 
-    MemoryUsageEstimator.SAVE_PEAK_MEM_FACTOR = 4 # Increase if less memory is available
-    MemoryUsageEstimator.reset_peak_memory_if_required(
-        save_peak_mem=True,
-        model=model,
-        X=torch.cat([X_train_tensor, X_test_tensor], dim=0),
-        cache_kv=False,
-        dtype_byte_size=2,
-        device=torch.device(device),
-    )
-
     with torch.inference_mode():
         with torch.autocast(device_type="cuda", dtype=torch.float16):
             pred_logits = model(
@@ -79,25 +80,30 @@ def main(dataset_name, output_file, checkpoint_path, device="cuda:0", omic="mrna
                 test_x=X_test_tensor,
             )
             n_classes = len(np.unique(y_train_tensor.cpu()))
-            pred_logits = pred_logits[..., :n_classes].float()  
+            pred_logits = pred_logits[..., :n_classes].float()
             pred_probs = torch.softmax(pred_logits, dim=-1)[:, 0, :].detach().cpu().numpy()
 
-
-    atts = [getattr(layer.get_submodule("self_attn_between_features"), "attention_map") for layer in model.transformer_encoder.layers]
+    atts = [
+        getattr(layer.get_submodule("self_attn_between_features"), "attention_map")
+        for layer in model.transformer_encoder.layers
+    ]
     atts = torch.stack(atts, dim=0)
     torch.save(atts, f"{output_file}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_name", type=str, required=True, help="Name of the dataset to use")
-    parser.add_argument("--output_file", type=str, required=True, help="Path to save the attention maps")
-    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the model checkpoint")
+    parser.add_argument(
+        "--dataset_name", type=str, required=True, help="Name of the dataset to use"
+    )
+    parser.add_argument(
+        "--output_file", type=str, required=True, help="Path to save the attention maps"
+    )
+    parser.add_argument(
+        "--checkpoint_path", type=str, required=True, help="Path to the model checkpoint"
+    )
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to run the model on")
     parser.add_argument("--omic", type=str, default="mrna", help="Omic type to use (default: mRNA)")
-    
+
     args = parser.parse_args()
     main(args.dataset_name, args.output_file, args.checkpoint_path, args.device, args.omic)
-    
-
-

@@ -2,11 +2,14 @@ import contextlib
 from tabpfn.constants import XType, YType
 from tabpfn.utils import infer_random_state
 from tabpfn.base import determine_precision, create_inference_engine
-from tabpfn.model.attention.full_attention import MultiHeadAttention, HAVE_FLASH_ATTN
-from tabpfn.model.memory import support_save_peak_mem_factor
+from tabpfn.architectures.base.attention.full_attention import MultiHeadAttention
+from tabpfn.architectures.base.memory import support_save_peak_mem_factor
 from sklearn import config_context
 from typing import Self
 import torch
+
+HAVE_FLASH_ATTN = False
+
 
 @config_context(transform_output="default")  # type: ignore
 def fit(self, X: XType, y: YType, model=None) -> Self:
@@ -16,35 +19,35 @@ def fit(self, X: XType, y: YType, model=None) -> Self:
         X: The input data.
         y: The target variable.
     """
-    if not hasattr(self, "model_") or not self.differentiable_input:
+    if not hasattr(self, "models_") or not self.differentiable_input:
         byte_size, rng = self._initialize_model_variables()
         ensemble_configs, X, y = self._initialize_dataset_preprocessing(X, y, rng)
     else:  # already fitted and prompt_tuning mode: no cat. features
         _, rng = infer_random_state(self.random_state)
-        _, _, byte_size = determine_precision(
-            self.inference_precision, self.device_
-        )
+        _, _, byte_size = determine_precision(self.inference_precision, self.devices_)
 
     if self.fit_mode == "batched":
-        raise ValueError(
-            "The fit() function is currently not supported in the batched fit_mode."
-        )
-        
+        raise ValueError("The fit() function is currently not supported in the batched fit_mode.")
+
     # This line was added to allow a custom model to be passed to fit()
     if model:
-        self.model_ = model
+        self.models_ = [model]
+
+    # Initialize tuning attributes to defaults, as the original fit does
+    self.tuned_classification_thresholds_ = None
+    self.softmax_temperature_ = getattr(self, "softmax_temperature", 1.0)
 
     # Create the inference engine
     self.executor_ = create_inference_engine(
         X_train=X,
         y_train=y,
-        model=self.model_,
+        models=self.models_,
         ensemble_configs=ensemble_configs,
         cat_ix=self.inferred_categorical_indices_,
         fit_mode=self.fit_mode,
-        device_=self.device_,
+        devices_=self.devices_,
         rng=rng,
-        n_jobs=self.n_jobs,
+        n_preprocessing_jobs=self.n_preprocessing_jobs,
         byte_size=byte_size,
         forced_inference_dtype_=self.forced_inference_dtype_,
         memory_saving_mode=self.memory_saving_mode,
@@ -53,6 +56,7 @@ def fit(self, X: XType, y: YType, model=None) -> Self:
     )
 
     return self
+
 
 @support_save_peak_mem_factor  # type: ignore
 def _compute(
@@ -96,8 +100,8 @@ def _compute(
         attention_head_outputs,
         self._w_out,
     )
-    
-    
+
+
 def compute_attention_heads(  # noqa: C901, PLR0912
     self,
     q: torch.Tensor | None,
@@ -108,7 +112,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
     dropout_p: float | None = None,
     softmax_scale: float | None = None,
 ) -> torch.Tensor:
-    """ This function was made a class method by adding 'self' as the first argument to allow access to class attributes"""
+    """This function was made a class method by adding 'self' as the first argument to allow access to class attributes"""
     assert (k is None) == (v is None)
     assert sum([qkv is None, kv is None, k is None and v is None]) == 2
     assert (qkv is None) != (q is None)
@@ -134,9 +138,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
     )
 
     # this string comparison is reliable, as it does not compare to a subversion
-    TORCH_2_ATTENTION_POSSIBLE = (
-        torch.__version__ >= "2" and torch.cuda.is_available()
-    )
+    TORCH_2_ATTENTION_POSSIBLE = torch.__version__ >= "2" and torch.cuda.is_available()
     USE_TORCH_2_GQA = False
     if TORCH_2_ATTENTION_POSSIBLE:
         with contextlib.suppress(TypeError, RuntimeError):
@@ -146,6 +148,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
                 torch.empty(1, 1, 1, 1),
                 enable_gqa=True,
             )
+            USE_TORCH_2_GQA = True
 
     if use_flash_attention:
 
@@ -224,9 +227,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
     elif TORCH_2_ATTENTION_POSSIBLE:
         extra_inputs = {}
         if softmax_scale is not None:
-            extra_inputs["scale"] = (
-                softmax_scale  # defaults to 1/sqrt(d_k) if None or not provided
-            )
+            extra_inputs["scale"] = softmax_scale  # defaults to 1/sqrt(d_k) if None or not provided
         if not USE_TORCH_2_GQA:
             k = MultiHeadAttention.broadcast_kv_across_heads(
                 k,
@@ -238,14 +239,14 @@ def compute_attention_heads(  # noqa: C901, PLR0912
             )
         else:
             extra_inputs["enable_gqa"] = True
-            
+
         ### This part was added to extract attention maps
-        if getattr(self, "save_att_map", False) and self.number_of_samples > 0: 
+        if getattr(self, "save_att_map", False) and self.number_of_samples > 0:
             attention_map_cpu = torch.zeros(q.shape[1], k.shape[1])
             for i in range(0, v.shape[0], 1):
                 q_slice = q[i : i + 1]
                 k_slice = k[i : i + 1]
-                
+
                 logits = torch.einsum("b q h d, b k h d -> b q k h", q_slice, k_slice)
                 logits *= (
                     torch.sqrt(torch.tensor(1.0 / d_k)).to(k.device)
@@ -253,7 +254,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
                     else softmax_scale
                 )
                 attention_map = torch.softmax(logits, dim=2).detach().cpu()
-                
+
                 attention_map_cpu += attention_map.mean(-1).sum(0) / self.number_of_samples
                 del attention_map
                 del q_slice
@@ -264,7 +265,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
             else:
                 self.attention_map += attention_map_cpu
         ### End of added part
-            
+
         attention_head_outputs = torch.nn.functional.scaled_dot_product_attention(
             q.transpose(1, 2),
             k.transpose(1, 2),
@@ -275,12 +276,12 @@ def compute_attention_heads(  # noqa: C901, PLR0912
         attention_head_outputs = attention_head_outputs.transpose(1, 2)
     else:
         ### This part was added to extract attention maps
-        if getattr(self, "save_att_map", False) and self.number_of_samples > 0: 
+        if getattr(self, "save_att_map", False) and self.number_of_samples > 0:
             attention_map_cpu = torch.zeros(q.shape[1], k.shape[1])
             for i in range(0, v.shape[0]):
                 q_slice = q[i : i + 1]
                 k_slice = k[i : i + 1]
-                
+
                 logits = torch.einsum("b q h d, b k h d -> b q k h", q_slice, k_slice)
                 logits *= (
                     torch.sqrt(torch.tensor(1.0 / d_k)).to(k.device)
@@ -288,7 +289,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
                     else softmax_scale
                 )
                 attention_map = torch.softmax(logits, dim=2).detach().cpu()
-                
+
                 attention_map_cpu += attention_map.mean(-1).sum(0) / self.number_of_samples
                 del attention_map
                 del q_slice
@@ -299,7 +300,7 @@ def compute_attention_heads(  # noqa: C901, PLR0912
             else:
                 self.attention_map += attention_map_cpu
         ### End of added part
-                
+
         k = MultiHeadAttention.broadcast_kv_across_heads(k, share_kv_across_n_heads)
         v = MultiHeadAttention.broadcast_kv_across_heads(v, share_kv_across_n_heads)
         logits = torch.einsum("b q h d, b k h d -> b q k h", q, k)

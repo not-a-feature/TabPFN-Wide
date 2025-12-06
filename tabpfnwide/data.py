@@ -11,33 +11,7 @@ from sklearn.datasets import fetch_openml
 
 from utils import feature_reduction_agglomeration
 
-@dataclass
-class PriorDatasetConfig:
-    batch_size: int = 8
-    batch_size_per_gp: int = 8  # Number of datasets per group, sharing similar characteristics
-    device: str = "cpu"
-    min_features: int = 10
-    max_features: int = 100
-    max_classes: int = 10
-    min_seq_len: int = 40
-    max_seq_len: int = 400
-    log_seq_len: bool = False
-    seq_len_per_gp: bool = False
-    min_train_size: float = 0.3
-    max_train_size: float = 0.9
-    replay_small: bool = False
-    prior_type: str = "mlp_scm"  # default
-    n_jobs: int = 1  # Set to 1 to avoid nested parallelism
-    
-    
-@dataclass
-class PriorDataLoaderConfig:
-    batch_size: int = None
-    shuffle: bool = False
-    num_workers: int = 1
-    prefetch_factor: int = 4
-    pin_memory: bool = True
-    pin_memory_device: str = "cuda"  # Device to pin memory to, typically the training device
+from config import PriorDatasetConfig, PriorDataLoaderConfig
 
 
 def load_prior_dataloader(

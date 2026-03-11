@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabpfnwide"
+version = "0.1.0"
+description = "TabPFN-Wide: Extension of the TabPFN-2 foundation model, specifically designed for wide datasets (many features, few samples)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Prior Labs License Version 1.1"}
+authors = [
+    {name = "Jules Kreuer"},
+    {name = "Christopher Kolberg"},
+    {name = "Jonas Huurdeman"},
+    {name = "Sofiane Ouaari"},
+    {name = "Katharina Eggensperger"},
+    {name = "Nico Pfeifer"},
+]
+keywords = ["tabpfn", "tabular", "machine-learning", "multi-omics", "foundation-model", "wide-data"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy",
+    "scikit-learn",
+    "scipy",
+    "torch",
+    "tabpfn==6.0.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pandas",
+    "tqdm",
+    "wandb",
+    "tabicl",
+    "openml",
+    "matplotlib",
+    "seaborn",
+    "scipy",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/not-a-feature/TabPFN-Wide"
+"Repository" = "https://github.com/not-a-feature/TabPFN-Wide"
+"Bug Tracker" = "https://github.com/not-a-feature/TabPFN-Wide/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tabpfnwide*"]
+
+[tool.setuptools.package-data]
+tabpfnwide = []

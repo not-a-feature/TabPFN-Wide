@@ -1,0 +1,24 @@
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+Model & BRCA & COAD & GBM & LGG & OV \\
+\#features & 18,206 & 17,261 & 18,614 & 14,260 & 14,229 \\
+\midrule
+TabPFN v2 & $0.528 \pm 0.006$ & $0.669 \pm 0.009$ & $0.303 \pm 0.010$ & $0.887 \pm 0.048$ & $0.514 \pm 0.049$ \\
+TabPFN-Wide (1.5k) & $0.744 \pm 0.022$ & $0.835 \pm 0.017$ & $0.717 \pm 0.050$ & $0.919 \pm 0.020$ & $0.877 \pm 0.075$ \\
+TabPFN-Wide (1.5k, No-Cat) & $0.797 \pm 0.025$ & $0.862 \pm 0.016$ & $0.771 \pm 0.070$ & $\textbf{0.976 \pm 0.026}$ & $0.852 \pm 0.027$ \\
+TabPFN-Wide (5k) & $0.852 \pm 0.032$ & $0.858 \pm 0.017$ & $0.799 \pm 0.071$ & $0.964 \pm 0.009$ & $0.880 \pm 0.049$ \\
+TabPFN-Wide (5k, No-Cat) & $0.852 \pm 0.028$ & $0.873 \pm 0.011$ & $0.787 \pm 0.088$ & $0.960 \pm 0.000$ & $0.877 \pm 0.050$ \\
+TabPFN-Wide (8k) & $0.759 \pm 0.017$ & $0.869 \pm 0.042$ & $0.737 \pm 0.059$ & $0.972 \pm 0.011$ & $0.866 \pm 0.064$ \\
+TabPFN-Wide (8k, No-Cat) & $0.864 \pm 0.029$ & $0.873 \pm 0.017$ & $\textbf{0.816 \pm 0.063}$ & $0.964 \pm 0.009$ & $\textbf{0.887 \pm 0.034}$ \\
+\midrule
+TabICL & $0.767 \pm 0.056$ & $0.781 \pm 0.073$ & $0.660 \pm 0.045$ & $0.911 \pm 0.037$ & $0.676 \pm 0.063$ \\
+Random Forest & $0.815 \pm 0.014$ & $0.831 \pm 0.042$ & $0.779 \pm 0.092$ & $0.960 \pm 0.014$ & $0.859 \pm 0.047$ \\
+XGBoost & $\textbf{0.867 \pm 0.026}$ & $0.862 \pm 0.037$ & $0.775 \pm 0.087$ & $0.964 \pm 0.017$ & $0.838 \pm 0.072$ \\
+RealMLP & $0.845 \pm 0.016$ & $\textbf{0.892 \pm 0.022}$ & $0.783 \pm 0.094$ & $0.955 \pm 0.023$ & $0.827 \pm 0.041$ \\
+\bottomrule
+\end{tabular}
+\caption{Multiomics Accuracy Comparison}
+\label{tab:multiomics_accuracy}
+\end{table}

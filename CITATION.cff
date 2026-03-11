@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Kreuer"
+  given-names: "Jules"
+  orcid: "https://orcid.org/0000-0002-7305-833X"
+- family-names: "Kolberg"
+  given-names: "Christopher"
+- family-names: "Huurdeman"
+  given-names: "Jonas"
+- family-names: "Ouaari"
+  given-names: "Sofiane"
+  orcid: "https://orcid.org/0009-0000-0942-3796"
+- family-names: "Eggensperger"
+  given-names: "Katharina"
+- family-names: "Pfeifer"
+  given-names: "Nico"
+  orcid: "https://orcid.org/0000-0002-4647-8566"
+title: "TabPFN-Wide"
+version: 0.1.0
+doi: XXX
+date-released: 2025-01-20
+url: "https://github.com/not-a-feature/TabPFN-Wide"

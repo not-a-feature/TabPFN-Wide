@@ -1,12 +1,12 @@
 # TabPFN-Wide
-
+[![DOI: 10.48550/arXiv.2510.06162](https://img.shields.io/badge/DOI-10.48550/arXiv.2510.06162-4caf50)](https://arxiv.org/abs/2510.06162) [![Citation Badge](https://api.juleskreuer.eu/citation-badge.php?doi=10.48550/arXiv.2510.06162)](https://juleskreuer.eu//projects/citation-badge)
 [![Python Versions](https://img.shields.io/pypi/pyversions/tabpfnwide.svg)](https://pypi.org/project/tabpfnwide/)
 [![License](https://img.shields.io/badge/License-PriorLabs-blue.svg)](LICENSE)
 
 > [!NOTE]
-> DOI: XXX
-> Authors: Christopher Kolberg, Jules Kreuer, Jonas Huurdeman, Sofiane Ouaari, Katharina Eggensperger, Nico Pfeifer
-
+> DOI: 10.48550/arXiv.2510.06162<br>
+> Authors: Christopher Kolberg*, Jules Kreuer*, Jonas Huurdeman*, Sofiane Ouaari, Katharina Eggensperger, Nico Pfeifer<br>
+> Built with PriorLabs-TabPFN.
 
 **TabPFN-Wide** is an extension of the TabPFN-2 foundation model, specifically designed for **wide datasets** (many features, few samples), such as **multi-omics** data. It allows for training and evaluating large-scale tabular models that can handle thousands of features.
 
@@ -130,14 +130,6 @@ bash analysis/run_analysis.sh "$CHECKPOINT_PATH" "$OUTPUT_DIR"
 See `analysis/analysis.sbatch` for more details.
 
 ---
-
-## Citation
-
-If you use this code or model in your research, please cite:
-
-```bibtex
-TODO
-```
 
 For the original TabPFN work, please cite:
 

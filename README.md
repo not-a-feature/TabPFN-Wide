@@ -1,5 +1,5 @@
 # TabPFN-Wide
-[![DOI: 10.48550/arXiv.2510.06162](https://img.shields.io/badge/DOI-10.48550/arXiv.2510.06162-4caf50)](https://arxiv.org/abs/2510.06162) [![Citation Badge](https://api.juleskreuer.eu/citation-badge.php?doi=10.48550/arXiv.2510.06162)](https://juleskreuer.eu//projects/citation-badge)
+[![DOI: 10.48550/arXiv.2510.06162](https://img.shields.io/badge/DOI-10.48550/arXiv.2510.06162-4caf50)](https://arxiv.org/abs/2510.06162) [![Citation Badge](https://api.juleskreuer.eu/citation-badge.php?doi=10.48550/arXiv.2510.06162)](https://juleskreuer.eu/projects/citation-badge)
 [![Python Versions](https://img.shields.io/pypi/pyversions/tabpfnwide.svg)](https://pypi.org/project/tabpfnwide/)
 [![License](https://img.shields.io/badge/License-PriorLabs-blue.svg)](LICENSE)
 
@@ -10,7 +10,8 @@
 
 **TabPFN-Wide** is an extension of the TabPFN-2 foundation model, specifically designed for **wide datasets** (many features, few samples), such as **multi-omics** data. It allows for training and evaluating large-scale tabular models that can handle thousands of features.
 
-This repository provides a release (v0.1.0) of the `tabpfnwide` package along with a suite of **scripts** for training, feature-smearing analysis, and biological interpretation used in the TabPFN-Wide paper.
+> [!IMPORTANT]
+> This repository provides a release (v0.1.0) of the `tabpfnwide` package along with a suite of **scripts** for training, feature-smearing analysis, and biological interpretation used in the TabPFN-Wide paper.
 
 Latter releases will include bug fixes and new features.
 

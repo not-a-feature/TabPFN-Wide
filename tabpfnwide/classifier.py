@@ -1,15 +1,17 @@
-import torch
-import numpy as np
-from scipy.sparse import csr_matrix, diags
+from __future__ import annotations
+
 import os
 import warnings
-import pathlib
-import dataclasses
+
+import numpy as np
+import torch
+from scipy.sparse import csr_matrix, diags
+
 from tabpfn import TabPFNClassifier
-from tabpfn.model.loading import load_model_criterion_config
-from tabpfnwide.patches import fit as patched_fit
-from tabpfn.base import determine_precision
-from tabpfn.utils import infer_random_state, infer_devices, update_encoder_params
+from tabpfn.base import ClassifierModelSpecs
+from tabpfn.model_loading import load_model_criterion_config
+
+from tabpfnwide.patches import patch_encoder_for_narrow_feature_groups
 
 VALID_MODELS = [
     "v2",
@@ -54,27 +56,77 @@ class TabPFNWideClassifier(TabPFNClassifier):
                 "save_attention_maps can only be True when n_estimators=1 and features_per_group=1"
             )
 
-        # Initialize parent TabPFNClassifier
-        # We pass ignore_pretraining_limits=True by default, but allow override
+        # Build a ClassifierModelSpecs that bundles the (potentially custom)
+        # wide checkpoint together with the v2 architecture/inference config.
+        model_specs = self._build_model_specs(
+            model_name=model_name,
+            model_path=model_path,
+            features_per_group=features_per_group,
+            device=device,
+        )
+
         if "ignore_pretraining_limits" not in kwargs:
             kwargs["ignore_pretraining_limits"] = True
 
         super().__init__(
             device=device,
             n_estimators=n_estimators,
-            model_path=model_path,
+            model_path=model_specs,
             **kwargs,
         )
 
-        # Restore model_path after super().__init__ overwrites it with default "auto"
-        self.model_path = model_path
+        # Keep wide-specific attributes for downstream code and for diagnostics.
         self.model_name = model_name
+        self.wide_model_path = model_path
         self.features_per_group = features_per_group
-        self.n_estimators = n_estimators
         self.save_attention_maps = save_attention_maps
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._wide_model = model_specs.model
 
-        self.model = self._load_model()
+    @staticmethod
+    def _build_model_specs(model_name, model_path, features_per_group, device):
+        """Load the v2 architecture, swap in the wide checkpoint, and wrap the
+        result in a ClassifierModelSpecs for injection into TabPFNClassifier.
+        """
+        models, _, configs, inference_config = load_model_criterion_config(
+            model_path=None,
+            check_bar_distribution_criterion=False,
+            cache_trainset_representation=False,
+            which="classifier",
+            version="v2",
+            download_if_not_exists=True,
+        )
+        model = models[0]
+        config = configs[0]
+
+        model.features_per_group = features_per_group
+        config.features_per_group = features_per_group
+
+        # Load the wide checkpoint *before* patching the encoder pipeline, so
+        # that the Linear's positional key in the saved state_dict
+        # (``encoder.5.layer.weight``) still matches the module index in
+        # ``model.encoder``.
+        if model_name != "v2":
+            checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+            if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+                state_dict = checkpoint["state_dict"]
+            else:
+                state_dict = checkpoint
+            model.load_state_dict(state_dict)
+
+        # @Master Students: In TabPFN >=8 the encoder pipeline no longer has a
+        # ``VariableNumFeaturesEncoderStep`` that pads inputs back up to the
+        # encoder Linear's training width. The wide checkpoints were finetuned
+        # from the v2 base (Linear sized for ``num_features_per_group=2``) but
+        # operate with ``features_per_group=1`` at the transformer level, so
+        # we need to inject a zero-pad step ourselves. No-op when there is no
+        # mismatch (e.g. ``features_per_group=2`` for the plain v2 model).
+        patch_encoder_for_narrow_feature_groups(model, features_per_group)
+
+        return ClassifierModelSpecs(
+            model=model,
+            architecture_config=config,
+            inference_config=inference_config,
+        )
 
     def _get_model_path(self, model_name):
         """Get the local path for a model, downloading it if necessary."""
@@ -116,88 +168,29 @@ class TabPFNWideClassifier(TabPFNClassifier):
 
         return local_path
 
-    def _initialize_model_variables(self):
-        # We already loaded the model in __init__
-        self.models_ = [self.model]
-
-        static_seed, rng = infer_random_state(self.random_state)
-
-        self.devices_ = infer_devices(self.device)
-
-        (
-            self.use_autocast_,
-            self.forced_inference_dtype_,
-            byte_size,
-        ) = determine_precision(self.inference_precision, self.devices_)
-
-        # Handle inference config override
-        if hasattr(self, "inference_config_"):
-            self.inference_config_ = self.inference_config_.override_with_user_input(
-                user_config=self.inference_config
-            )
-
-            outlier_removal_std = self.inference_config_.OUTLIER_REMOVAL_STD
-            if outlier_removal_std == "auto":
-                outlier_removal_std = (
-                    self.inference_config_._CLASSIFICATION_DEFAULT_OUTLIER_REMOVAL_STD
-                )
-        else:
-            # Fallback if inference_config_ was not set (should not happen with updated _load_wide_model)
-            outlier_removal_std = None
-
-        update_encoder_params(
-            models=self.models_,
-            remove_outliers_std=outlier_removal_std,
-            seed=static_seed,
-            differentiable_input=self.differentiable_input,
-        )
-
-        return byte_size, rng
-
-    def _load_model(self):
-        # Load the base model structure
-        models, _, configs, inference_config = load_model_criterion_config(
-            model_path=None,
-            check_bar_distribution_criterion=False,
-            cache_trainset_representation=False,
-            which="classifier",
-            version="v2",
-            download_if_not_exists=True,
-        )
-        model = models[0]
-
-        self.configs_ = configs
-        self.inference_config_ = inference_config
-
-        model.features_per_group = self.features_per_group
-        self.configs_[0].features_per_group = self.features_per_group
-
-        if self.model_name != "v2":
-            checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
-
-            # Handle DDP-wrapped checkpoints and direct state dicts
-            if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-                state_dict = checkpoint["state_dict"]
-            else:
-                state_dict = checkpoint
-
-            model.load_state_dict(state_dict)
-
-        return model
-
     def fit(self, X, y):
-        # Store n_features_in_ for attention map cropping
+        # Store n_features_in_ for attention map cropping.
         self.n_features_in_ = X.shape[1]
 
         if self.save_attention_maps:
-            for layer in self.model.transformer_encoder.layers:
+            for layer in self._wide_model.transformer_encoder.layers:
                 if hasattr(layer, "self_attn_between_features"):
                     layer.self_attn_between_features.save_att_map = True
                     layer.self_attn_between_features.number_of_samples = X.shape[0]
                     layer.self_attn_between_features.attention_map = None
 
-        # Use the patched fit function, passing the loaded model
-        return patched_fit(self, X, y, model=self.model)
+        return super().fit(X, y)
+
+    @property
+    def model(self):
+        """The wide model used by this estimator.
+
+        Returns the model bound to the parent ``models_`` list once ``fit()``
+        has been called, falling back to the pre-loaded wide model otherwise.
+        """
+        if hasattr(self, "models_") and self.models_:
+            return self.models_[0]
+        return self._wide_model
 
     def get_attention_maps(self):
         """Return attention maps mapped to original input features.
@@ -303,9 +296,12 @@ class TabPFNWideClassifier(TabPFNClassifier):
         if not hasattr(self, "executor_"):
             return None
 
-        # Get preprocessor from executor
+        # TabPFN >=8 keeps the fitted preprocessors on each ensemble member.
+        # Older releases exposed them directly on the executor; support both.
         preprocessor = None
-        if hasattr(self.executor_, "preprocessors") and self.executor_.preprocessors:
+        if hasattr(self.executor_, "ensemble_members") and self.executor_.ensemble_members:
+            preprocessor = self.executor_.ensemble_members[0].cpu_preprocessor
+        elif hasattr(self.executor_, "preprocessors") and self.executor_.preprocessors:
             preprocessor = self.executor_.preprocessors[0]
         elif hasattr(self.executor_, "preprocessor"):
             preprocessor = self.executor_.preprocessor
@@ -318,20 +314,23 @@ class TabPFNWideClassifier(TabPFNClassifier):
         index_permutation = None
         append_to_original = False
 
-        # Walk through preprocessor steps
-        steps = getattr(preprocessor, "steps", [])
-        for step in steps:
-            step_obj = step[1] if isinstance(step, tuple) else step
-
-            # Check for ShuffleFeaturesStep
+        # PreprocessingPipeline._validate_steps always normalises entries to
+        # (step, modalities) tuples (see ``StepWithModalities`` in
+        # tabpfn.preprocessing.pipeline_interface).
+        for step_obj, _modalities in preprocessor.steps:
             if hasattr(step_obj, "index_permutation_"):
                 index_permutation = step_obj.index_permutation_
 
-            # Check for ReshapeFeatureDistributionsStep
-            if hasattr(step_obj, "append_to_original"):
-                append_to_original = step_obj.append_to_original
+            # ``append_to_original_decision_`` is the resolved bool that
+            # supersedes the user-facing ``append_to_original`` setting (which
+            # may be ``"auto"``).
+            if hasattr(step_obj, "append_to_original_decision_"):
+                append_to_original = bool(step_obj.append_to_original_decision_)
+            elif hasattr(step_obj, "append_to_original"):
+                val = step_obj.append_to_original
+                if isinstance(val, bool):
+                    append_to_original = val
 
-        # Build the mapping from original feature idx to preprocessed positions
         original_to_preprocessed = {}
 
         if index_permutation is not None:

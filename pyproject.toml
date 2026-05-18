@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tabpfnwide"
-version = "0.1.0"
+version = "0.2.0"
 description = "TabPFN-Wide: Extension of the TabPFN-2 foundation model, specifically designed for wide datasets (many features, few samples)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,7 +31,7 @@ dependencies = [
     "scikit-learn",
     "scipy",
     "torch",
-    "tabpfn==6.0.6",
+    "tabpfn==8.0.3",
 ]
 
 [project.optional-dependencies]

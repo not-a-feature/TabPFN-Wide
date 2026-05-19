@@ -9,7 +9,6 @@ from tabpfn.architectures.base.memory import support_save_peak_mem_factor
 from tabpfn.architectures.encoders import (
     NormalizeFeatureGroupsEncoderStep,
     TorchPreprocessingPipeline,
-    TorchPreprocessingStep,
 )
 
 
@@ -40,7 +39,10 @@ class NormalizeAndPadFeatureGroupsEncoderStep(NormalizeFeatureGroupsEncoderStep)
         if missing <= 0:
             return x
         pad = torch.zeros(
-            *x.shape[:-1], missing, device=x.device, dtype=x.dtype,
+            *x.shape[:-1],
+            missing,
+            device=x.device,
+            dtype=x.dtype,
         )
         return torch.cat([x, pad], dim=-1)
 
@@ -56,9 +58,7 @@ class NormalizeAndPadFeatureGroupsEncoderStep(NormalizeFeatureGroupsEncoderStep)
                 state[key] = self._pad_to_target(state[key])
         super()._fit(state, **kwargs)
 
-    def _transform(
-        self, state: dict[str, torch.Tensor], **kwargs: Any
-    ) -> dict[str, torch.Tensor]:
+    def _transform(self, state: dict[str, torch.Tensor], **kwargs: Any) -> dict[str, torch.Tensor]:
         # _fit already padded the relevant keys in `state` when called above.
         # During pure-inference (no _fit), pad now.
         main_key = self.in_keys[0]
@@ -81,19 +81,19 @@ def patch_encoder_for_narrow_feature_groups(
     Mutates ``model.encoder`` in place. Preserves module indices, so any
     state-dict already loaded into the model stays valid.
     """
-    encoder = getattr(model, "encoder", None)
-    if not isinstance(encoder, TorchPreprocessingPipeline):
-        return
+    raw_encoder = model.encoder
+    assert isinstance(raw_encoder, TorchPreprocessingPipeline), (
+        f"Expected model.encoder to be a TorchPreprocessingPipeline, "
+        f"got {type(raw_encoder).__name__}"
+    )
+    encoder: TorchPreprocessingPipeline = raw_encoder
 
     # Determine the encoder's intrinsic group width from the active normalize
     # step (i.e. ``normalize_by_used_features=True``). If that width already
     # matches the runtime, nothing to do.
     encoder_target = None
     for step in encoder:
-        if (
-            isinstance(step, NormalizeFeatureGroupsEncoderStep)
-            and step.normalize_by_used_features
-        ):
+        if isinstance(step, NormalizeFeatureGroupsEncoderStep) and step.normalize_by_used_features:
             encoder_target = step.num_features_per_group
             break
 
@@ -118,7 +118,7 @@ def patch_encoder_for_narrow_feature_groups(
             in_keys=step.in_keys,
             out_keys=step.out_keys,
         )
-        encoder._modules[str(idx)] = replacement
+        encoder[idx] = replacement
         break
 
 
@@ -181,9 +181,6 @@ def _compute(
             attention_map = torch.softmax(logits, dim=2).detach().cpu()
             attention_map_cpu += attention_map.mean(-1).sum(0) / self.number_of_samples
             del attention_map, q_slice, k_slice
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
         if self.attention_map is None:
             self.attention_map = attention_map_cpu

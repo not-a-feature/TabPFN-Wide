@@ -87,6 +87,14 @@ class TabPFNWideClassifier(TabPFNClassifier):
         """Load the v2 architecture, swap in the wide checkpoint, and wrap the
         result in a ClassifierModelSpecs for injection into TabPFNClassifier.
         """
+        # Validate the wide checkpoint path *before* paying for the v2 download
+        # so configuration mistakes surface immediately.
+        if model_name != "v2" and (not model_path or not os.path.isfile(model_path)):
+            raise ValueError(
+                f"Wide checkpoint path must point to an existing file when "
+                f"model_name != 'v2', got model_name={model_name!r}, model_path={model_path!r}."
+            )
+
         models, _, configs, inference_config = load_model_criterion_config(
             model_path=None,
             check_bar_distribution_criterion=False,
@@ -106,11 +114,6 @@ class TabPFNWideClassifier(TabPFNClassifier):
         # (``encoder.5.layer.weight``) still matches the module index in
         # ``model.encoder``.
         if model_name != "v2":
-            if not model_path or not os.path.isfile(model_path):
-                raise ValueError(
-                    f"Wide checkpoint path must point to an existing file when "
-                    f"model_name != 'v2', got model_name={model_name!r}, model_path={model_path!r}."
-                )
             checkpoint = torch.load(model_path, map_location=device, weights_only=False)
             if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
                 state_dict = checkpoint["state_dict"]

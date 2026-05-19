@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          filter: blob:none
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          cache-dependency-glob: pyproject.toml
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install package + pytest
+        run: |
+          uv venv
+          uv pip install -e . pytest
+      - name: Run fast tests
+        run: uv run --no-sync pytest tests -m "not slow" -v

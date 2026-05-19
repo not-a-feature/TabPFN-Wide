@@ -11,7 +11,13 @@ defaults:
 
 # Use "trusted publishing", see https://docs.pypi.org/trusted-publishers/
 jobs:
+  tests:
+    # Gate the release on the fast pytest suite. The slow tests (model
+    # downloads, full fit/predict) are excluded so the release isn't blocked
+    # by HuggingFace flakiness.
+    uses: ./.github/workflows/tests.yaml
   release:
+    needs: tests
     name: Upload release to PyPI
     runs-on: ubuntu-latest
     environment:

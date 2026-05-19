@@ -57,3 +57,12 @@ include = ["tabpfnwide*"]
 
 [tool.setuptools.package-data]
 tabpfnwide = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The liftover battery requires a second venv with tabpfn 6.x and is driven by
+# tests/liftover/compare_tabpfn_versions.sh, not by pytest.
+norecursedirs = ["tests/liftover", ".venvs", "TabPFN", "TabPFN-Wide-old"]
+markers = [
+    "slow: tests that download model weights or run full fit/predict cycles",
+]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import types
 import warnings
 
 import numpy as np
@@ -11,7 +12,10 @@ from tabpfn import TabPFNClassifier
 from tabpfn.base import ClassifierModelSpecs
 from tabpfn.model_loading import load_model_criterion_config
 
-from tabpfnwide.patches import patch_encoder_for_narrow_feature_groups
+from tabpfnwide.patches import (
+    _compute as _patched_attention_compute,
+    patch_encoder_for_narrow_feature_groups,
+)
 
 VALID_MODELS = [
     "v2",
@@ -183,9 +187,11 @@ class TabPFNWideClassifier(TabPFNClassifier):
         if self.save_attention_maps:
             for layer in self._wide_model.transformer_encoder.layers:
                 if hasattr(layer, "self_attn_between_features"):
-                    layer.self_attn_between_features.save_att_map = True
-                    layer.self_attn_between_features.number_of_samples = X.shape[0]
-                    layer.self_attn_between_features.attention_map = None
+                    attn = layer.self_attn_between_features
+                    attn.save_att_map = True
+                    attn.number_of_samples = X.shape[0]
+                    attn.attention_map = None
+                    attn._compute = types.MethodType(_patched_attention_compute, attn)
 
         return super().fit(X, y)
 

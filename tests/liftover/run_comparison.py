@@ -9,6 +9,7 @@ The public tabpfnwide API used here (TabPFNWideClassifier, fit, predict_proba,
 get_attention_maps, get_attention_to_label) is identical between the two
 releases, so this script runs as-is in either environment.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -45,9 +46,7 @@ def _dataset_dummy_small():
         random_state=0,
         shuffle=False,
     )
-    Xtr, Xte, ytr, yte = train_test_split(
-        X, y, test_size=0.25, random_state=0, stratify=y
-    )
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, random_state=0, stratify=y)
     return Xtr, Xte, ytr, yte
 
 
@@ -60,9 +59,7 @@ def _dataset_dummy_wide():
         random_state=0,
         shuffle=False,
     )
-    Xtr, Xte, ytr, yte = train_test_split(
-        X, y, test_size=0.2, random_state=0, stratify=y
-    )
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=0, stratify=y)
     return Xtr, Xte, ytr, yte
 
 
@@ -85,8 +82,9 @@ CASES = [
 ]
 
 
-def run_case(case_id: str, dataset_fn, model_name: str, save_attention: bool,
-             out_dir: Path) -> dict:
+def run_case(
+    case_id: str, dataset_fn, model_name: str, save_attention: bool, out_dir: Path
+) -> dict:
     """Fit on (Xtr, ytr), predict on Xtr and Xte, dump everything, return
     timing/metadata."""
     from tabpfnwide.classifier import TabPFNWideClassifier  # imported lazily
@@ -118,11 +116,9 @@ def run_case(case_id: str, dataset_fn, model_name: str, save_attention: bool,
     t1 = time.perf_counter()
     clf.fit(Xtr, ytr)
     t2 = time.perf_counter()
-    proba_train = clf.predict_proba(Xtr)
     proba_test = clf.predict_proba(Xte)
     t3 = time.perf_counter()
 
-    np.save(case_dir / "proba_train.npy", proba_train)
     np.save(case_dir / "proba_test.npy", proba_test)
 
     info = {
@@ -134,7 +130,6 @@ def run_case(case_id: str, dataset_fn, model_name: str, save_attention: bool,
         "init_seconds": t1 - t0,
         "fit_seconds": t2 - t1,
         "predict_seconds": t3 - t2,
-        "proba_train_shape": list(proba_train.shape),
         "proba_test_shape": list(proba_test.shape),
     }
 
@@ -160,6 +155,11 @@ def run_case(case_id: str, dataset_fn, model_name: str, save_attention: bool,
         except Exception as e:  # noqa: BLE001
             info["attention_to_label_error"] = repr(e)
 
+    # Now safe to do the second predict — attention reads are done.
+    proba_train = clf.predict_proba(Xtr)
+    np.save(case_dir / "proba_train.npy", proba_train)
+    info["proba_train_shape"] = list(proba_train.shape)
+
     with (case_dir / "info.json").open("w") as f:
         json.dump(info, f, indent=2)
 
@@ -176,6 +176,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     import tabpfn, tabpfnwide  # noqa: PLC0415
+
     env_info = {
         "tag": args.tag,
         "tabpfn_version": getattr(tabpfn, "__version__", "unknown"),
@@ -184,8 +185,10 @@ def main() -> int:
         "torch": torch.__version__,
         "numpy": np.__version__,
     }
-    print(f"[{args.tag}] tabpfn={env_info['tabpfn_version']} "
-          f"tabpfnwide={env_info['tabpfnwide_version']}")
+    print(
+        f"[{args.tag}] tabpfn={env_info['tabpfn_version']} "
+        f"tabpfnwide={env_info['tabpfnwide_version']}"
+    )
     with (out_dir / "_env.json").open("w") as f:
         json.dump(env_info, f, indent=2)
 
@@ -195,6 +198,7 @@ def main() -> int:
             run_case(case_id, dataset_fn, model_name, save_attention, out_dir)
         except Exception as e:  # noqa: BLE001
             import traceback
+
             traceback.print_exc()
             failures.append((case_id, repr(e)))
 

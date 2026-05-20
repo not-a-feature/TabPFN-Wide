@@ -86,6 +86,16 @@ class TabPFNWideClassifier(TabPFNClassifier):
         self.save_attention_maps = save_attention_maps
         self._wide_model = model_specs.model
 
+        # Install the attention-recording patch once, per attention instance,
+        # only on this model. The buffer reset and number_of_samples update
+        # happen later in fit()/_predict_proba().
+        if self.save_attention_maps:
+            for layer in self._wide_model.transformer_encoder.layers:
+                if hasattr(layer, "self_attn_between_features"):
+                    attn = layer.self_attn_between_features
+                    attn.save_att_map = True
+                    attn._compute = types.MethodType(_patched_attention_compute, attn)
+
     @staticmethod
     def _build_model_specs(model_name, model_path, features_per_group, device):
         """Load the v2 architecture, swap in the wide checkpoint, and wrap the
@@ -187,13 +197,20 @@ class TabPFNWideClassifier(TabPFNClassifier):
         if self.save_attention_maps:
             for layer in self._wide_model.transformer_encoder.layers:
                 if hasattr(layer, "self_attn_between_features"):
-                    attn = layer.self_attn_between_features
-                    attn.save_att_map = True
-                    attn.number_of_samples = X.shape[0]
-                    attn.attention_map = None
-                    attn._compute = types.MethodType(_patched_attention_compute, attn)
+                    layer.self_attn_between_features.number_of_samples = X.shape[0]
 
         return super().fit(X, y)
+
+    def _predict_proba(self, X):
+        # Reset attention buffers before each forward pass so attention_map
+        # reflects only this call. Without this, repeated predict/predict_proba
+        # invocations would accumulate into the same buffer.
+        if self.save_attention_maps:
+            for layer in self._wide_model.transformer_encoder.layers:
+                if hasattr(layer, "self_attn_between_features"):
+                    layer.self_attn_between_features.attention_map = None
+
+        return super()._predict_proba(X)
 
     @property
     def model(self):
@@ -221,7 +238,7 @@ class TabPFNWideClassifier(TabPFNClassifier):
             original input features.
         """
         if not self.save_attention_maps:
-            raise ValueError("Attention maps were not saved during training.")
+            raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
 
         raw_maps = []
         for layer in self.model.transformer_encoder.layers:
@@ -396,7 +413,7 @@ class TabPFNWideClassifier(TabPFNClassifier):
         attention matrices and n_features_in is the number of input features.
         """
         if not self.save_attention_maps:
-            raise ValueError("Attention maps were not saved during training.")
+            raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
 
         maps = []
         for layer in self.model.transformer_encoder.layers:
@@ -430,7 +447,7 @@ class TabPFNWideClassifier(TabPFNClassifier):
             averaged across all transformer layers.
         """
         if not self.save_attention_maps:
-            raise ValueError("Attention maps were not saved during training.")
+            raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
 
         n_original = self.n_features_in_
 

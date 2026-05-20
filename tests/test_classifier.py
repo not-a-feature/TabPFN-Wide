@@ -159,3 +159,71 @@ def test_local_wide_checkpoint_fit_predict(name, path):
     clf.fit(Xtr, ytr)
     pred = clf.predict(Xte)
     assert pred.shape == (len(Xte),)
+
+
+# ---------------------------------------------------------------------------
+# Attention-recording smoke test — guards the instance-level patching in
+# __init__/_predict_proba against regressions (previously a global
+# import-time monkeypatch on MultiHeadAttention._compute).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_save_attention_maps_records_and_resets():
+    n_features = 8
+    X, y = make_classification(n_samples=40, n_features=n_features, random_state=0)
+    Xtr, Xte = X[:30], X[30:]
+    ytr = y[:30]
+
+    clf = TabPFNWideClassifier(
+        model_name="v2",
+        device="cpu",
+        n_estimators=1,
+        features_per_group=1,
+        save_attention_maps=True,
+        random_state=0,
+    )
+    clf.fit(Xtr, ytr)
+
+    # Sanity: patch is installed on each attention module that has the wide
+    # between-features attention, with save_att_map=True.
+    patched_modules = [
+        layer.self_attn_between_features
+        for layer in clf._wide_model.transformer_encoder.layers
+        if hasattr(layer, "self_attn_between_features")
+    ]
+    assert patched_modules, "no between-features attention modules found"
+    assert all(getattr(m, "save_att_map", False) for m in patched_modules)
+
+    clf.predict_proba(Xte)
+
+    raw_maps, n_in = clf.get_raw_attention_maps()
+    assert n_in == n_features
+    assert len(raw_maps) >= 1, "expected at least one layer of raw attention maps"
+    for m in raw_maps:
+        assert m.ndim == 2 and m.shape[0] == m.shape[1], (
+            f"raw attention map must be square, got shape {m.shape}"
+        )
+
+    mapped = clf.get_attention_maps()
+    assert mapped is not None and len(mapped) >= 1
+    for m in mapped:
+        assert m.shape == (n_features, n_features), (
+            f"mapped attention map must be (n_features, n_features), got {m.shape}"
+        )
+
+    attn_to_label = clf.get_attention_to_label()
+    assert attn_to_label.shape == (n_features,)
+
+    # Reset check: a second predict on the same data must not roughly double
+    # the recorded scale. Without _predict_proba's reset, attention_map would
+    # accumulate and the magnitudes would be ~2x the first call.
+    first_scale = np.mean([np.abs(m).sum() for m in raw_maps])
+    clf.predict_proba(Xte)
+    raw_maps_2, _ = clf.get_raw_attention_maps()
+    second_scale = np.mean([np.abs(m).sum() for m in raw_maps_2])
+    ratio = second_scale / first_scale
+    assert 0.9 < ratio < 1.1, (
+        f"attention buffers were not reset between predicts: "
+        f"second/first scale ratio = {ratio:.3f} (expected ~1.0)"
+    )

@@ -78,12 +78,17 @@ import numpy as np
 
 # Note: Attention maps require n_estimators=1 and features_per_group=1
 clf = TabPFNWideClassifier(
-    model_name="wide-v2-5k", 
+    model_name="wide-v2-5k",
     save_attention_maps=True,
     n_estimators=1,
     features_per_group=1
 )
 clf.fit(X_train, y_train)
+
+# Attention maps are recorded during the forward pass, so call predict
+# (or predict_proba) before reading them. Each call resets the buffers,
+# so the readouts below reflect this most recent forward pass only.
+clf.predict_proba(X_test)
 
 # 1. Get raw feature-to-feature attention maps (list of maps per layer)
 attn_per_layer = clf.get_attention_maps()

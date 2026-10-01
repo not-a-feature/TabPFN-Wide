@@ -1,8 +1,15 @@
-name: Tests
+name: Smoke Test
+
+# Fits and predicts with the base v2 model and every bundled wide checkpoint on
+# CPU, and records attention maps. Downloads the v2 base weights from
+# HuggingFace, so it is kept out of the release gate (see release.yaml).
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
-  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,8 +20,10 @@ defaults:
     shell: bash -euo pipefail {0}
 
 jobs:
-  pytest:
+  pytest-slow:
     runs-on: ubuntu-latest
+    env:
+      UV_TORCH_BACKEND: cpu
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,5 +39,5 @@ jobs:
         run: |
           uv venv
           uv pip install -e . pytest
-      - name: Run fast tests
-        run: uv run --no-sync pytest tests -m "not slow" -v
+      - name: Run smoke tests
+        run: uv run --no-sync pytest tests -m slow -v

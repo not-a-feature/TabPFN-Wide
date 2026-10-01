@@ -12,10 +12,7 @@ from tabpfn import TabPFNClassifier
 from tabpfn.base import ClassifierModelSpecs
 from tabpfn.model_loading import load_model_criterion_config
 
-from tabpfnwide.patches import (
-    _compute as _patched_attention_compute,
-    patch_encoder_for_narrow_feature_groups,
-)
+from tabpfnwide.patches import forward_recording_attention, narrow_feature_group_embedder
 
 VALID_MODELS = [
     "v2",
@@ -90,11 +87,9 @@ class TabPFNWideClassifier(TabPFNClassifier):
         # only on this model. The buffer reset and number_of_samples update
         # happen later in fit()/_predict_proba().
         if self.save_attention_maps:
-            for layer in self._wide_model.transformer_encoder.layers:
-                if hasattr(layer, "self_attn_between_features"):
-                    attn = layer.self_attn_between_features
-                    attn.save_att_map = True
-                    attn._compute = types.MethodType(_patched_attention_compute, attn)
+            for block in self._wide_model.blocks:
+                attn = block.per_sample_attention_between_features
+                attn.forward = types.MethodType(forward_recording_attention, attn)
 
     @staticmethod
     def _build_model_specs(model_name, model_path, features_per_group, device):
@@ -113,20 +108,15 @@ class TabPFNWideClassifier(TabPFNClassifier):
             model_path=None,
             check_bar_distribution_criterion=False,
             cache_trainset_representation=False,
-            which="classifier",
+            estimator_type="classifier",
             version="v2",
             download_if_not_exists=True,
         )
         model = models[0]
         config = configs[0]
 
-        model.features_per_group = features_per_group
-        config.features_per_group = features_per_group
-
-        # Load the wide checkpoint *before* patching the encoder pipeline, so
-        # that the Linear's positional key in the saved state_dict
-        # (``encoder.5.layer.weight``) still matches the module index in
-        # ``model.encoder``.
+        # Load the wide checkpoint *before* narrowing the input projection, so
+        # that its weight still matches the checkpoint's (emsize, 4) shape.
         if model_name != "v2":
             checkpoint = torch.load(model_path, map_location=device, weights_only=False)
             if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
@@ -135,14 +125,14 @@ class TabPFNWideClassifier(TabPFNClassifier):
                 state_dict = checkpoint
             model.load_state_dict(state_dict)
 
-        # @Master Students: In TabPFN >=8 the encoder pipeline no longer has a
-        # ``VariableNumFeaturesEncoderStep`` that pads inputs back up to the
-        # encoder Linear's training width. The wide checkpoints were finetuned
-        # from the v2 base (Linear sized for ``num_features_per_group=2``) but
-        # operate with ``features_per_group=1`` at the transformer level, so
-        # we need to inject a zero-pad step ourselves. No-op when there is no
-        # mismatch (e.g. ``features_per_group=2`` for the plain v2 model).
-        patch_encoder_for_narrow_feature_groups(model, features_per_group)
+        # @Master Students: The wide checkpoints were finetuned from the v2 base
+        # (input projection sized for ``features_per_group=2``) but operate with
+        # ``features_per_group=1``. TabPFN 9 sizes the projection from
+        # ``features_per_group`` and no longer zero-pads groups, so the
+        # projection is narrowed to the equivalent one-feature form.
+        if features_per_group == 1:
+            narrow_feature_group_embedder(model)
+        config.features_per_group = features_per_group
 
         return ClassifierModelSpecs(
             model=model,
@@ -195,9 +185,8 @@ class TabPFNWideClassifier(TabPFNClassifier):
         self.n_features_in_ = X.shape[1]
 
         if self.save_attention_maps:
-            for layer in self._wide_model.transformer_encoder.layers:
-                if hasattr(layer, "self_attn_between_features"):
-                    layer.self_attn_between_features.number_of_samples = X.shape[0]
+            for block in self._wide_model.blocks:
+                block.per_sample_attention_between_features.number_of_samples = X.shape[0]
 
         return super().fit(X, y)
 
@@ -206,9 +195,8 @@ class TabPFNWideClassifier(TabPFNClassifier):
         # reflects only this call. Without this, repeated predict/predict_proba
         # invocations would accumulate into the same buffer.
         if self.save_attention_maps:
-            for layer in self._wide_model.transformer_encoder.layers:
-                if hasattr(layer, "self_attn_between_features"):
-                    layer.self_attn_between_features.attention_map = None
+            for block in self._wide_model.blocks:
+                block.per_sample_attention_between_features.attention_map = None
 
         return super()._predict_proba(X)
 
@@ -241,11 +229,10 @@ class TabPFNWideClassifier(TabPFNClassifier):
             raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
 
         raw_maps = []
-        for layer in self.model.transformer_encoder.layers:
-            if hasattr(layer, "self_attn_between_features"):
-                attn = getattr(layer.self_attn_between_features, "attention_map", None)
-                if attn is not None:
-                    raw_maps.append(attn.numpy())
+        for block in self.model.blocks:
+            attn = getattr(block.per_sample_attention_between_features, "attention_map", None)
+            if attn is not None:
+                raw_maps.append(attn.numpy())
 
         n_original = self.n_features_in_
 
@@ -416,11 +403,10 @@ class TabPFNWideClassifier(TabPFNClassifier):
             raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
 
         maps = []
-        for layer in self.model.transformer_encoder.layers:
-            if hasattr(layer, "self_attn_between_features"):
-                attn = getattr(layer.self_attn_between_features, "attention_map", None)
-                if attn is not None:
-                    maps.append(attn.numpy())
+        for block in self.model.blocks:
+            attn = getattr(block.per_sample_attention_between_features, "attention_map", None)
+            if attn is not None:
+                maps.append(attn.numpy())
 
         n_features = getattr(self, "n_features_in_", None)
         return maps, n_features
@@ -459,15 +445,14 @@ class TabPFNWideClassifier(TabPFNClassifier):
 
         # Collect attention from label to features from each layer
         layer_attentions = []
-        for layer in self.model.transformer_encoder.layers:
-            if hasattr(layer, "self_attn_between_features"):
-                attn = getattr(layer.self_attn_between_features, "attention_map", None)
-                if attn is not None:
-                    raw_attn = attn.numpy()
-                    # Last ROW = how much the label (query) attends to each feature (key)
-                    # Shape: (n_preprocessed,) - excludes label-to-label self-attention
-                    label_attn_to_features = raw_attn[-1, :-1]
-                    layer_attentions.append(label_attn_to_features)
+        for block in self.model.blocks:
+            attn = getattr(block.per_sample_attention_between_features, "attention_map", None)
+            if attn is not None:
+                raw_attn = attn.numpy()
+                # Last ROW = how much the label (query) attends to each feature (key)
+                # Shape: (n_preprocessed,) - excludes label-to-label self-attention
+                label_attn_to_features = raw_attn[-1, :-1]
+                layer_attentions.append(label_attn_to_features)
 
         assert layer_attentions, "No attention maps found."
 

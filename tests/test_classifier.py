@@ -13,6 +13,7 @@ import pytest
 from sklearn.datasets import make_classification
 
 from tabpfnwide.classifier import VALID_MODELS, TabPFNWideClassifier
+from tabpfnwide.patches import forward_recording_attention
 
 
 # ---------------------------------------------------------------------------
@@ -185,15 +186,13 @@ def test_save_attention_maps_records_and_resets():
     )
     clf.fit(Xtr, ytr)
 
-    # Sanity: patch is installed on each attention module that has the wide
-    # between-features attention, with save_att_map=True.
+    # Sanity: the recording forward is installed on every between-features
+    # attention module.
     patched_modules = [
-        layer.self_attn_between_features
-        for layer in clf._wide_model.transformer_encoder.layers
-        if hasattr(layer, "self_attn_between_features")
+        block.per_sample_attention_between_features for block in clf._wide_model.blocks
     ]
     assert patched_modules, "no between-features attention modules found"
-    assert all(getattr(m, "save_att_map", False) for m in patched_modules)
+    assert all(m.forward.__func__ is forward_recording_attention for m in patched_modules)
 
     clf.predict_proba(Xte)
 

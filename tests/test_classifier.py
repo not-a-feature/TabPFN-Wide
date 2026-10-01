@@ -12,6 +12,7 @@ import os
 import numpy as np
 import pytest
 import torch
+from scipy.stats import spearmanr
 from sklearn.datasets import make_classification
 
 from tabpfnwide.classifier import VALID_MODELS, TabPFNWideClassifier
@@ -367,3 +368,112 @@ def test_aggregation_guards(full_and_label):
         label.get_attention_maps()
     with pytest.raises(AssertionError, match="must reduce"):
         label.get_attention_to_label(aggregation=lambda a, axis: a)
+
+
+# ---------------------------------------------------------------------------
+# Token-to-feature mapping. TabPFN's preprocessing drops constant columns,
+# moves columns it detects as categorical (< 4 distinct values with > 100
+# training rows) to the front when append_to_original is off, appends
+# transformed copies when it is on, and adds SVD columns. The mapping must
+# follow all of it.
+# ---------------------------------------------------------------------------
+
+
+def _wide_lowcard_data(n_samples, n_features, n_lowcard, n_const, seed=0):
+    """Zero-dominated columns with values {0, 1, 2}, plus constant columns."""
+    X, y = make_classification(
+        n_samples=n_samples, n_features=n_features, n_informative=10, random_state=seed
+    )
+    rng = np.random.default_rng(seed)
+    special = rng.choice(n_features, n_lowcard + n_const, replace=False)
+    lowcard, const = special[:n_lowcard], special[n_lowcard:]
+    for j in lowcard:
+        X[:, j] = rng.choice([0.0, 0.0, 0.0, 1.0, 2.0], size=n_samples)
+    X[:, const] = 5.0
+    return X, y, lowcard, const
+
+
+MAPPING_CASES = {
+    # 505 non-constant features >= 500: append_to_original resolves to False and
+    # the categorical columns are moved to the front.
+    "categoricals-moved": dict(n_features=520, append_to_original=False),
+    "append-to-original": dict(n_features=200, append_to_original=True),
+}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("case", list(MAPPING_CASES))
+def test_feature_mapping_follows_preprocessing(case):
+    n_features = MAPPING_CASES[case]["n_features"]
+    X, y, lowcard, const = _wide_lowcard_data(130, n_features, n_lowcard=150, n_const=15)
+    Xtr, ytr = X[:120], y[:120]
+    clf = _classifier("wide-v2-5k", False)
+    clf.fit(Xtr, ytr)
+
+    pipeline = clf.executor_.ensemble_members[0].cpu_preprocessor
+    reshape = next(s for s, _ in pipeline.steps if hasattr(s, "append_to_original_decision_"))
+    assert reshape.append_to_original_decision_ == MAPPING_CASES[case]["append_to_original"]
+    final_columns = pipeline.final_feature_schema_.features
+    assert sum(f.modality.value == "categorical" for f in final_columns) == len(lowcard)
+
+    info = clf.get_feature_mapping_debug()
+    assert info["n_preprocessed"] == pipeline.final_feature_schema_.num_columns
+    for j in const:
+        assert info["original_to_preprocessed"][j] == []
+
+    # Every token assigned to a feature must be a deterministic one-to-one
+    # function of that feature on the training rows.
+    Xpre = pipeline.transform(Xtr).X
+    n_checked = 0
+    for j, positions in info["original_to_preprocessed"].items():
+        if j not in const:
+            assert positions, f"feature {j} has no token"
+        for p in positions:
+            n_pairs = len(set(zip(Xtr[:, j], Xpre[:, p])))
+            assert n_pairs == len(np.unique(Xtr[:, j])) == len(np.unique(Xpre[:, p])), (
+                f"token {p} ({info['token_names'][p]}) is not derived from feature {j}"
+            )
+            n_checked += 1
+    assert n_checked == sum(f is not None for f in info["token_features"])
+
+
+@pytest.mark.slow
+def test_label_attention_survives_column_permutation():
+    X, y, lowcard, const = _wide_lowcard_data(150, 200, n_lowcard=40, n_const=10, seed=1)
+    perm = np.random.default_rng(2).permutation(X.shape[1])
+
+    def scores(Xp):
+        clf = TabPFNWideClassifier(
+            model_name="v2",
+            device="cpu",
+            save_attention_maps="label",
+            random_state=0,
+            # Ordinal codes of detected categoricals depend on column order;
+            # switch detection off to isolate the mapping.
+            inference_config={"MIN_UNIQUE_FOR_NUMERICAL_FEATURES": 1},
+        )
+        clf.fit(Xp[:120], y[:120])
+        clf.predict_proba(Xp[120:])
+        return clf.get_attention_to_label()
+
+    original = scores(X)
+    permuted_back = np.empty_like(original)
+    permuted_back[perm] = scores(X[:, perm])
+    assert np.isnan(original[const]).all() and np.isnan(permuted_back[const]).all()
+    keep = np.isfinite(original)
+    assert spearmanr(original[keep], permuted_back[keep]).statistic > 0.9
+
+
+@pytest.mark.slow
+def test_full_maps_nan_for_dropped_features():
+    X, y, _, const = _wide_lowcard_data(40, 30, n_lowcard=0, n_const=4, seed=3)
+    clf = _classifier("v2", True)
+    clf.fit(X[:30], y[:30])
+    clf.predict_proba(X[30:])
+    kept = np.setdiff1d(np.arange(30), const)
+    for mapped in clf.get_attention_maps():
+        assert mapped.shape == (30, 30)
+        assert np.isnan(mapped[const]).all() and np.isnan(mapped[:, const]).all()
+        assert np.isfinite(mapped[np.ix_(kept, kept)]).all()
+    label = clf.get_attention_to_label()
+    assert np.isnan(label[const]).all() and np.isfinite(label[kept]).all()

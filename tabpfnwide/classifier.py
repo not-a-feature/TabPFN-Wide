@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import types
-import warnings
 
 import numpy as np
 import torch
@@ -230,16 +229,16 @@ class TabPFNWideClassifier(TabPFNClassifier):
     def get_attention_maps(self):
         """Return attention maps mapped to original input features.
 
-        This method handles the preprocessing transformations by:
-        1. Extracting the raw attention maps from the transformer
-        2. Using the preprocessor's index_permutation_ to map back to original features
-        3. Handling feature doubling from append_to_original=True
-        4. Aggregating attention for each original feature
+        Each token is assigned to the input feature it was derived from, following
+        the fitted preprocessing pipeline (see :meth:`_get_feature_mapping_info`).
+        Attention between two input features is the mean over all pairs of their
+        tokens. Tokens added by the pipeline (SVD, fingerprint) are left out.
 
         Returns:
             List of numpy arrays, one per transformer layer, with shape
             (n_features_in_, n_features_in_) representing attention between
-            original input features.
+            original input features. Rows and columns of features the
+            pipeline dropped (e.g. constant columns) are NaN.
         """
         if self.save_attention_maps is not True:
             raise ValueError(
@@ -253,163 +252,94 @@ class TabPFNWideClassifier(TabPFNClassifier):
             if attn is not None:
                 raw_maps.append(attn.numpy())
 
-        n_original = self.n_features_in_
-
-        # Get the preprocessing mapping info
         mapping_info = self._get_feature_mapping_info()
-        if mapping_info is None:
-            warnings.warn("Could not get feature mapping info. Returning None.")
-            return None
+        n_tokens = mapping_info["n_preprocessed"]
+        token_features = mapping_info["token_features"]
 
-        original_to_preprocessed = mapping_info["original_to_preprocessed"]
-        n_preprocessed = mapping_info["n_preprocessed"]
-
-        # Build sparse mapping matrix P
-        # P[i, p] = 1 if original feature i maps to preprocessed feature p
-        rows = []
-        cols = []
-        data = []
-
-        for orig_idx, positions in original_to_preprocessed.items():
-            for pos in positions:
-                rows.append(orig_idx)
-                cols.append(pos)
-                data.append(1.0)
-
-        # Shape is (n_original, n_preprocessed_max)
-        # We use a sufficiently large shape to cover all indices found
-        max_col = max(cols) if cols else 0
-        n_matrix_cols = max(n_preprocessed, max_col + 1)
-
-        P = csr_matrix((data, (rows, cols)), shape=(n_original, n_matrix_cols))
+        # P[i, p] = 1 if token p was derived from input feature i, row-normalized.
+        cols = [p for p, feature in enumerate(token_features) if feature is not None]
+        rows = [token_features[p] for p in cols]
+        P = csr_matrix(
+            (np.ones(len(rows)), (rows, cols)), shape=(self.n_features_in_, n_tokens)
+        )
+        tokens_per_feature = np.asarray(P.sum(axis=1)).ravel()
+        dropped = tokens_per_feature == 0
+        P_norm = diags(1.0 / np.where(dropped, 1.0, tokens_per_feature)) @ P
 
         mapped_maps = []
         for raw_attn in raw_maps:
-            curr_dim = raw_attn.shape[0]
-
-            # Match P columns to raw_attn dimensions
-            if P.shape[1] > curr_dim:
-                P_sliced = P[:, :curr_dim]
-            elif P.shape[1] < curr_dim:
-                # Slice raw_attn to match P columns
-                raw_attn = raw_attn[: P.shape[1], : P.shape[1]]
-                P_sliced = P
-            else:
-                P_sliced = P
-
-            # Calculate normalization factors (counts of valid mappings)
-            row_sums = np.array(P_sliced.sum(axis=1)).flatten()
-            row_sums[row_sums == 0] = 1.0
-
-            # Create normalized mapping matrix
-            scale = 1.0 / row_sums
-            D = diags(scale)
-            P_norm = D @ P_sliced
-
-            # Compute mapped attention: P_norm @ raw_attn @ P_norm.T
-            temp = P_norm @ raw_attn  # (n_original, curr_dim)
-            mapped_attn = temp @ P_norm.T  # (n_original, n_original)
-
-            # Convert to dense array if needed
-            if hasattr(mapped_attn, "toarray"):
-                mapped_attn = mapped_attn.toarray()
-
+            # The last token is the label.
+            assert raw_attn.shape == (n_tokens + 1, n_tokens + 1), (
+                f"Attention map of shape {raw_attn.shape} does not match "
+                f"{n_tokens} feature tokens plus the label token."
+            )
+            mapped_attn = np.asarray((P_norm @ raw_attn[:n_tokens, :n_tokens]) @ P_norm.T)
+            mapped_attn[dropped, :] = np.nan
+            mapped_attn[:, dropped] = np.nan
             mapped_maps.append(mapped_attn)
 
         return mapped_maps
 
     def _get_feature_mapping_info(self):
-        """Extract feature mapping from preprocessor to original features.
+        """Map each input feature to the token positions it occupies in the model input.
+
+        Follows the final feature schema of the fitted preprocessing pipeline, which
+        records every reordering, removal and addition of columns: the shuffle, the
+        move of categorical columns to the front, dropped constant columns, the
+        transformed copies appended by ``append_to_original`` and the SVD and
+        fingerprint features. A token belongs to an input feature if its column
+        carries that feature's name, either as its own name (passed through or
+        encoded one-to-one) or as its ``ancestor`` (distribution-transformed).
+        Tokens added by the pipeline belong to no feature. Any other token, such as
+        an expanded one-hot column, raises an error.
 
         Returns a dict with:
-        - original_to_preprocessed: dict mapping original feature idx to list
-          of preprocessed positions
-        - n_preprocessed: total number of preprocessed features
-        - index_permutation: the shuffle permutation applied
-
-        Returns None if mapping cannot be extracted.
+        - original_to_preprocessed: input feature index -> list of token positions,
+          empty for features the pipeline dropped
+        - n_preprocessed: number of feature tokens (the label token excluded)
+        - token_features: input feature index per token position, None for tokens
+          added by the pipeline
+        - token_names: column name per token position
         """
-        # Need the executor to access preprocessors
-        if not hasattr(self, "executor_"):
-            return None
+        if self.inference_config_.ENABLE_GPU_PREPROCESSING:
+            raise ValueError(
+                "Attention cannot be mapped to input features with GPU preprocessing, "
+                "which reorders and adds columns outside the recorded feature schema."
+            )
+        (member,) = self.executor_.ensemble_members
+        pipeline = member.cpu_preprocessor
 
-        # TabPFN >=8 keeps the fitted preprocessors on each ensemble member.
-        # Older releases exposed them directly on the executor; support both.
-        preprocessor = None
-        if hasattr(self.executor_, "ensemble_members") and self.executor_.ensemble_members:
-            preprocessor = self.executor_.ensemble_members[0].cpu_preprocessor
-        elif hasattr(self.executor_, "preprocessors") and self.executor_.preprocessors:
-            preprocessor = self.executor_.preprocessors[0]
-        elif hasattr(self.executor_, "preprocessor"):
-            preprocessor = self.executor_.preprocessor
+        input_index = {f.name: j for j, f in enumerate(self.inferred_feature_schema_.features)}
+        assert len(input_index) == self.n_features_in_, (
+            f"Expected {self.n_features_in_} uniquely named input features, "
+            f"got {len(input_index)}."
+        )
+        added_prefixes = tuple(step.added_feature_prefix() for step, _ in pipeline.steps)
 
-        if preprocessor is None:
-            return None
-
-        # Extract info from preprocessor steps
-        n_original = self.n_features_in_
-        index_permutation = None
-        append_to_original = False
-
-        # PreprocessingPipeline._validate_steps always normalises entries to
-        # (step, modalities) tuples (see ``StepWithModalities`` in
-        # tabpfn.preprocessing.pipeline_interface).
-        for step_obj, _modalities in preprocessor.steps:
-            if hasattr(step_obj, "index_permutation_"):
-                index_permutation = step_obj.index_permutation_
-
-            # ``append_to_original_decision_`` is the resolved bool that
-            # supersedes the user-facing ``append_to_original`` setting (which
-            # may be ``"auto"``).
-            if hasattr(step_obj, "append_to_original_decision_"):
-                append_to_original = bool(step_obj.append_to_original_decision_)
-            elif hasattr(step_obj, "append_to_original"):
-                val = step_obj.append_to_original
-                if isinstance(val, bool):
-                    append_to_original = val
-
-        original_to_preprocessed = {}
-
-        if index_permutation is not None:
-            # Convert to list if tensor
-            if hasattr(index_permutation, "tolist"):
-                perm = index_permutation.tolist()
+        token_names, token_features = [], []
+        for column in pipeline.final_feature_schema_.features:
+            source = column.name if column.name in input_index else column.ancestor
+            if source in input_index:
+                token_features.append(input_index[source])
+            elif (column.ancestor or column.name).startswith(added_prefixes):
+                token_features.append(None)
             else:
-                perm = list(index_permutation)
+                raise ValueError(
+                    f"Cannot map token column {column.name!r} (ancestor {column.ancestor!r}) "
+                    f"to an input feature."
+                )
+            token_names.append(column.name)
 
-            n_preprocessed = len(perm)
-
-            # When append_to_original=True, positions 0..n-1 are originals,
-            # positions n..2n-1 are transformed versions
-            if append_to_original:
-                for orig_idx in range(n_original):
-                    positions = []
-                    # Find where this original feature ended up after shuffle
-                    for new_pos, old_pos in enumerate(perm):
-                        # Original features are at indices 0..n-1 before shuffle
-                        # Transformed versions are at indices n..2n-1
-                        if old_pos == orig_idx or old_pos == (orig_idx + n_original):
-                            positions.append(new_pos)
-                    original_to_preprocessed[orig_idx] = positions if positions else [orig_idx]
-            else:
-                # No feature doubling - direct mapping through permutation
-                for orig_idx in range(n_original):
-                    positions = []
-                    for new_pos, old_pos in enumerate(perm):
-                        if old_pos == orig_idx:
-                            positions.append(new_pos)
-                    original_to_preprocessed[orig_idx] = positions if positions else [orig_idx]
-        else:
-            # No shuffle info - assume identity mapping
-            n_preprocessed = n_original
-            for i in range(n_original):
-                original_to_preprocessed[i] = [i]
+        original_to_preprocessed = {j: [] for j in range(self.n_features_in_)}
+        for position, feature in enumerate(token_features):
+            if feature is not None:
+                original_to_preprocessed[feature].append(position)
 
         return {
             "original_to_preprocessed": original_to_preprocessed,
-            "n_preprocessed": n_preprocessed,
-            "index_permutation": index_permutation,
-            "append_to_original": append_to_original,
+            "n_preprocessed": len(token_features),
+            "token_features": token_features,
+            "token_names": token_names,
         }
 
     def get_raw_attention_maps(self):
@@ -463,7 +393,9 @@ class TabPFNWideClassifier(TabPFNClassifier):
         Returns:
             numpy array of shape (n_features_in_,) where each value represents
             how much the label token attends to that original input feature,
-            averaged across all transformer layers.
+            averaged across all transformer layers and over the feature's
+            tokens. NaN for features the preprocessing dropped (e.g. constant
+            columns), which have no token.
         """
         if not self.save_attention_maps:
             raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
@@ -473,13 +405,7 @@ class TabPFNWideClassifier(TabPFNClassifier):
                 "since the full maps only keep the summed rows."
             )
 
-        n_original = self.n_features_in_
-
-        # Get the preprocessing mapping info
         mapping_info = self._get_feature_mapping_info()
-        assert mapping_info is not None, "Could not get feature mapping info."
-
-        original_to_preprocessed = mapping_info["original_to_preprocessed"]
 
         # Collect attention from label to features from each layer
         layer_attentions = []
@@ -507,15 +433,15 @@ class TabPFNWideClassifier(TabPFNClassifier):
 
         # Average across layers
         avg_attn_to_label = np.mean(layer_attentions, axis=0)
+        assert avg_attn_to_label.shape == (mapping_info["n_preprocessed"],), (
+            f"Got label attention for {avg_attn_to_label.shape[0]} tokens, "
+            f"expected {mapping_info['n_preprocessed']} feature tokens."
+        )
 
-        # Map preprocessed positions back to original features
-        # Each original feature may map to multiple preprocessed positions
-        result = np.zeros(n_original)
-        for orig_idx in range(n_original):
-            positions = original_to_preprocessed.get(orig_idx, [orig_idx])
-            # Filter positions that are within bounds
-            valid_positions = [p for p in positions if p < len(avg_attn_to_label)]
-            if valid_positions:
-                result[orig_idx] = np.mean([avg_attn_to_label[p] for p in valid_positions])
+        # Mean over the tokens derived from each input feature; NaN for dropped ones.
+        result = np.full(self.n_features_in_, np.nan)
+        for feature, positions in mapping_info["original_to_preprocessed"].items():
+            if positions:
+                result[feature] = avg_attn_to_label[positions].mean()
 
         return result

@@ -17,7 +17,7 @@ authors:
   given-names: "Nico"
   orcid: "https://orcid.org/0000-0002-4647-8566"
 title: "TabPFN-Wide"
-version: 0.4.0
+version: 0.4.1
 doi: XXX
 date-released: 2025-10-01
 url: "https://github.com/not-a-feature/TabPFN-Wide"

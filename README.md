@@ -112,6 +112,16 @@ mean_importances = clf.get_attention_to_label(aggregation=np.mean)
 median_importances = clf.get_attention_to_label(aggregation=np.median)
 ```
 
+Scores are mapped back to the input features through TabPFN's fitted preprocessing, which
+shuffles the columns, drops constant ones, moves columns it detects as categorical to the
+front, and adds SVD components. Features that were dropped have no token and get `NaN`, so use
+`np.nanargmax` or similar when ranking them.
+
+Columns with fewer than 4 distinct values are treated as categorical once there are more than
+100 training rows (common for zero-dominated count data). Their ordinal codes are shuffled at
+random, so their attention scores depend on the column order. Passing
+`inference_config={"MIN_UNIQUE_FOR_NUMERICAL_FEATURES": 1}` switches this detection off.
+
 See `demo_attention_maps.py` for more details.
 
 

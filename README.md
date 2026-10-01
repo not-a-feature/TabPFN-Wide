@@ -99,6 +99,19 @@ avg_attn_matrix = np.mean(attn_per_layer, axis=0)
 importances = clf.get_attention_to_label()
 ```
 
+If only the label-to-feature attention is needed, `save_attention_maps="label"` records just
+that, one vector per row, instead of the full feature-by-feature maps. This is much faster and
+uses far less memory on wide data, and the per-row scores can be combined with any reduction
+called as `f(scores, axis=0)`, such as `np.median`:
+
+```python
+clf = TabPFNWideClassifier(model_name="wide-v2-5k", save_attention_maps="label")
+clf.fit(X_train, y_train)
+clf.predict_proba(X_test)
+mean_importances = clf.get_attention_to_label(aggregation=np.mean)
+median_importances = clf.get_attention_to_label(aggregation=np.median)
+```
+
 See `demo_attention_maps.py` for more details.
 
 

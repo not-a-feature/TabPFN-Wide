@@ -6,10 +6,12 @@ the base TabPFN-v2 weights and is marked ``slow`` so it can be skipped with
 """
 from __future__ import annotations
 
+import functools
 import os
 
 import numpy as np
 import pytest
+import torch
 from sklearn.datasets import make_classification
 
 from tabpfnwide.classifier import VALID_MODELS, TabPFNWideClassifier
@@ -61,6 +63,11 @@ def test_save_attention_maps_rejects_multiple_estimators():
             features_per_group=1,
             save_attention_maps=True,
         )
+
+
+def test_save_attention_maps_rejects_unknown_mode():
+    with pytest.raises(ValueError, match="save_attention_maps must be"):
+        TabPFNWideClassifier(model_name="v2", device="cpu", save_attention_maps="full")
 
 
 def test_save_attention_maps_rejects_features_per_group_gt_1():
@@ -226,3 +233,137 @@ def test_save_attention_maps_records_and_resets():
         f"attention buffers were not reset between predicts: "
         f"second/first scale ratio = {ratio:.3f} (expected ~1.0)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Label-only attention recording. The full maps hold, per layer, the sum over
+# rows divided by the number of training rows, so their label row rescaled by
+# n_train / n_rows must equal the per-row mean recorded in label mode.
+# ---------------------------------------------------------------------------
+
+PKG_MODELS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tabpfnwide", "models")
+
+LABEL_CASES = {
+    "v2-binary": dict(model="v2", n_train=30, n_test=10, n_features=12, n_classes=2, nan=0.0),
+    "1.5k-3class-200feat": dict(
+        model="wide-v2-1.5k", n_train=45, n_test=15, n_features=200, n_classes=3, nan=0.0
+    ),
+    "5k-nan10": dict(model="wide-v2-5k", n_train=40, n_test=12, n_features=60, n_classes=2, nan=0.1),
+}
+
+
+def _classifier(model, mode):
+    if model == "v2":
+        source = dict(model_name="v2")
+    else:
+        source = dict(model_path=os.path.join(PKG_MODELS, f"tabpfn-{model}.pt"))
+    return TabPFNWideClassifier(device="cpu", save_attention_maps=mode, random_state=0, **source)
+
+
+@pytest.fixture(scope="module", params=list(LABEL_CASES), ids=list(LABEL_CASES))
+def full_and_label(request):
+    case = LABEL_CASES[request.param]
+    n = case["n_train"] + case["n_test"]
+    X, y = make_classification(
+        n_samples=n,
+        n_features=case["n_features"],
+        n_informative=5,
+        n_classes=case["n_classes"],
+        n_clusters_per_class=1,
+        random_state=0,
+    )
+    X[np.random.default_rng(0).random(X.shape) < case["nan"]] = np.nan
+    Xtr, Xte, ytr = X[: case["n_train"]], X[case["n_train"] :], y[: case["n_train"]]
+    fitted = {}
+    for mode in (True, "label"):
+        clf = _classifier(case["model"], mode)
+        clf.fit(Xtr, ytr)
+        fitted[mode] = (clf, clf.predict_proba(Xte))
+    return case, fitted[True], fitted["label"]
+
+
+@pytest.mark.slow
+def test_label_mode_predictions_match_full_mode(full_and_label):
+    _, (_, proba_full), (_, proba_label) = full_and_label
+    np.testing.assert_allclose(proba_label, proba_full, atol=1e-6)
+
+
+@pytest.mark.slow
+def test_full_map_label_row_equals_label_mode_mean_per_layer(full_and_label):
+    case, (full, _), (label, _) = full_and_label
+    n_rows = case["n_train"] + case["n_test"]
+    raw_maps, _ = full.get_raw_attention_maps()
+    assert len(raw_maps) == len(label.model.blocks)
+    for raw_map, block in zip(raw_maps, label.model.blocks):
+        rows_by_tokens = torch.cat(block.per_sample_attention_between_features.label_attention)
+        assert rows_by_tokens.shape == (n_rows, raw_map.shape[0])
+        np.testing.assert_allclose(
+            rows_by_tokens.numpy().mean(axis=0),
+            raw_map[-1] * case["n_train"] / n_rows,
+            rtol=1e-4,
+            atol=1e-8,
+        )
+
+
+@pytest.mark.slow
+def test_get_attention_to_label_mean_identical_across_modes(full_and_label):
+    case, (full, _), (label, _) = full_and_label
+    n_rows = case["n_train"] + case["n_test"]
+    from_full = full.get_attention_to_label(aggregation=np.mean) * case["n_train"] / n_rows
+    direct = label.get_attention_to_label(aggregation=np.mean)
+    assert direct.shape == (case["n_features"],)
+    np.testing.assert_allclose(direct, from_full, rtol=1e-4, atol=1e-8)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "aggregation",
+    [np.mean, np.median, functools.partial(np.quantile, q=0.9)],
+    ids=["mean", "median", "q90"],
+)
+def test_label_mode_aggregation_matches_manual(full_and_label, aggregation):
+    case, _, (label, _) = full_and_label
+    mapping = label.get_feature_mapping_debug()["original_to_preprocessed"]
+    per_layer = [
+        aggregation(
+            torch.cat(block.per_sample_attention_between_features.label_attention).numpy(), axis=0
+        )[:-1]
+        for block in label.model.blocks
+    ]
+    per_token = np.mean(per_layer, axis=0)
+    expected = np.array([per_token[mapping[j]].mean() for j in range(case["n_features"])])
+    np.testing.assert_allclose(
+        label.get_attention_to_label(aggregation=aggregation), expected, rtol=1e-6
+    )
+
+
+@pytest.mark.slow
+def test_median_differs_from_mean(full_and_label):
+    _, _, (label, _) = full_and_label
+    assert not np.allclose(
+        label.get_attention_to_label(aggregation=np.median),
+        label.get_attention_to_label(aggregation=np.mean),
+    )
+
+
+@pytest.mark.slow
+def test_label_mode_reset_between_predicts(full_and_label):
+    case, _, (label, _) = full_and_label
+    first = label.get_attention_to_label()
+    X, _ = make_classification(n_samples=7, n_features=case["n_features"], random_state=5)
+    label.predict_proba(X)
+    assert len(
+        torch.cat(label.model.blocks[0].per_sample_attention_between_features.label_attention)
+    ) == case["n_train"] + 7
+    assert not np.allclose(label.get_attention_to_label(), first)
+
+
+@pytest.mark.slow
+def test_aggregation_guards(full_and_label):
+    _, (full, _), (label, _) = full_and_label
+    with pytest.raises(ValueError, match="require save_attention_maps='label'"):
+        full.get_attention_to_label(aggregation=np.median)
+    with pytest.raises(ValueError, match="require save_attention_maps=True"):
+        label.get_attention_maps()
+    with pytest.raises(AssertionError, match="must reduce"):
+        label.get_attention_to_label(aggregation=lambda a, axis: a)

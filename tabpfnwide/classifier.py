@@ -12,7 +12,11 @@ from tabpfn import TabPFNClassifier
 from tabpfn.base import ClassifierModelSpecs
 from tabpfn.model_loading import load_model_criterion_config
 
-from tabpfnwide.patches import forward_recording_attention, narrow_feature_group_embedder
+from tabpfnwide.patches import (
+    forward_recording_attention,
+    forward_recording_label_attention,
+    narrow_feature_group_embedder,
+)
 
 VALID_MODELS = [
     "v2",
@@ -52,9 +56,15 @@ class TabPFNWideClassifier(TabPFNClassifier):
         if model_name != "v2" and not os.path.isfile(model_path):
             raise ValueError(f"Model path {model_path} does not exist.")
 
+        # save_attention_maps: False, True (full feature-by-feature maps), or
+        # "label" (only the label's attention to each feature, per row).
+        if save_attention_maps not in (False, True, "label"):
+            raise ValueError(
+                f"save_attention_maps must be False, True or 'label', got {save_attention_maps!r}"
+            )
         if save_attention_maps and (n_estimators != 1 or features_per_group != 1):
             raise ValueError(
-                "save_attention_maps can only be True when n_estimators=1 and features_per_group=1"
+                "save_attention_maps can only be set when n_estimators=1 and features_per_group=1"
             )
 
         # Build a ClassifierModelSpecs that bundles the (potentially custom)
@@ -87,9 +97,14 @@ class TabPFNWideClassifier(TabPFNClassifier):
         # only on this model. The buffer reset and number_of_samples update
         # happen later in fit()/_predict_proba().
         if self.save_attention_maps:
+            recorder = (
+                forward_recording_label_attention
+                if self.save_attention_maps == "label"
+                else forward_recording_attention
+            )
             for block in self._wide_model.blocks:
                 attn = block.per_sample_attention_between_features
-                attn.forward = types.MethodType(forward_recording_attention, attn)
+                attn.forward = types.MethodType(recorder, attn)
 
     @staticmethod
     def _build_model_specs(model_name, model_path, features_per_group, device):
@@ -191,12 +206,13 @@ class TabPFNWideClassifier(TabPFNClassifier):
         return super().fit(X, y)
 
     def _predict_proba(self, X):
-        # Reset attention buffers before each forward pass so attention_map
-        # reflects only this call. Without this, repeated predict/predict_proba
-        # invocations would accumulate into the same buffer.
+        # Reset attention buffers before each forward pass so they reflect only
+        # this call. Without this, repeated predict/predict_proba invocations
+        # would accumulate into the same buffer.
         if self.save_attention_maps:
             for block in self._wide_model.blocks:
                 block.per_sample_attention_between_features.attention_map = None
+                block.per_sample_attention_between_features.label_attention = []
 
         return super()._predict_proba(X)
 
@@ -225,8 +241,11 @@ class TabPFNWideClassifier(TabPFNClassifier):
             (n_features_in_, n_features_in_) representing attention between
             original input features.
         """
-        if not self.save_attention_maps:
-            raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
+        if self.save_attention_maps is not True:
+            raise ValueError(
+                f"Full attention maps require save_attention_maps=True, "
+                f"got {self.save_attention_maps!r}."
+            )
 
         raw_maps = []
         for block in self.model.blocks:
@@ -399,8 +418,11 @@ class TabPFNWideClassifier(TabPFNClassifier):
         Returns a tuple of (maps, n_features_in) where maps is a list of raw
         attention matrices and n_features_in is the number of input features.
         """
-        if not self.save_attention_maps:
-            raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
+        if self.save_attention_maps is not True:
+            raise ValueError(
+                f"Full attention maps require save_attention_maps=True, "
+                f"got {self.save_attention_maps!r}."
+            )
 
         maps = []
         for block in self.model.blocks:
@@ -419,13 +441,24 @@ class TabPFNWideClassifier(TabPFNClassifier):
         """
         return self._get_feature_mapping_info()
 
-    def get_attention_to_label(self):
+    def get_attention_to_label(self, aggregation=np.mean):
         """Return attention scores showing how much the label attends to each feature.
 
         In TabPFN's architecture, the label (y) is concatenated as the last token
         in the feature dimension. This method extracts how much the label token
         (as a query) attends to each feature (as keys), indicating feature
         importance for the prediction.
+
+        Args:
+            aggregation: Function combining the per-row scores over all rows
+                (train and test) of the last predict call, called as
+                ``aggregation(scores, axis=0)`` on a ``(rows, tokens)`` array,
+                e.g. ``np.mean``, ``np.median`` or
+                ``functools.partial(np.quantile, q=0.9)``. Anything other than
+                ``np.mean`` requires ``save_attention_maps="label"``. With
+                ``save_attention_maps=True`` the scores come from the full maps,
+                which hold the sum over rows divided by the number of training
+                rows.
 
         Returns:
             numpy array of shape (n_features_in_,) where each value represents
@@ -434,6 +467,11 @@ class TabPFNWideClassifier(TabPFNClassifier):
         """
         if not self.save_attention_maps:
             raise ValueError("Attention maps are not being recorded (save_attention_maps=False).")
+        if aggregation is not np.mean and self.save_attention_maps != "label":
+            raise ValueError(
+                "Aggregations other than np.mean require save_attention_maps='label', "
+                "since the full maps only keep the summed rows."
+            )
 
         n_original = self.n_features_in_
 
@@ -446,7 +484,18 @@ class TabPFNWideClassifier(TabPFNClassifier):
         # Collect attention from label to features from each layer
         layer_attentions = []
         for block in self.model.blocks:
-            attn = getattr(block.per_sample_attention_between_features, "attention_map", None)
+            attn_module = block.per_sample_attention_between_features
+            if self.save_attention_maps == "label":
+                assert attn_module.label_attention, "No label attention recorded; predict first."
+                rows_by_tokens = torch.cat(attn_module.label_attention).numpy()
+                per_token = np.asarray(aggregation(rows_by_tokens, axis=0))
+                assert per_token.shape == rows_by_tokens.shape[1:], (
+                    f"aggregation must reduce (rows, tokens) to (tokens,), got {per_token.shape}"
+                )
+                # Drop the last token (label-to-label self-attention).
+                layer_attentions.append(per_token[:-1])
+                continue
+            attn = getattr(attn_module, "attention_map", None)
             if attn is not None:
                 raw_attn = attn.numpy()
                 # Last ROW = how much the label (query) attends to each feature (key)

@@ -64,3 +64,27 @@ def forward_recording_attention(self: AlongRowAttention, x_BrSE: torch.Tensor) -
         self.attention_map += attention_map_cpu
 
     return AlongRowAttention.forward(self, x_BrSE)
+
+
+def forward_recording_label_attention(
+    self: AlongRowAttention, x_BrSE: torch.Tensor
+) -> torch.Tensor:
+    """Between-features attention that additionally records the label's attention.
+
+    The label is the last token. For every row, only its query is scored against
+    all keys, which costs ``O(tokens)`` per row instead of the ``O(tokens^2)`` of
+    the full map. The softmax-normalized scores, averaged across heads, are
+    appended to ``self.label_attention`` as a ``(rows, tokens)`` CPU tensor.
+    The output is computed by the upstream :meth:`AlongRowAttention.forward`.
+    """
+    Br, C, _ = x_BrSE.shape
+    with torch.no_grad():
+        q_label_BrHD = self.q_projection(x_BrSE[:, -1]).view(Br, -1, self.head_dim)
+        k_BrHCD = self.k_projection(x_BrSE).view(Br, C, -1, self.head_dim).transpose(1, 2)
+        logits_BrHC = torch.einsum("bhd, bhcd -> bhc", q_label_BrHD, k_BrHCD) / math.sqrt(
+            self.head_dim
+        )
+        self.label_attention.append(torch.softmax(logits_BrHC.float(), dim=-1).mean(1).cpu())
+        del q_label_BrHD, k_BrHCD, logits_BrHC
+
+    return AlongRowAttention.forward(self, x_BrSE)
